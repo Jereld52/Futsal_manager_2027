@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.venv/
+
+# Données locales, sauvegardes et journaux (jamais dans le dépôt)
+data/*
+!data/ban2.png
+!data/fm27.ico
+!data/intro1.png
+!data/jgames.png
+!data/logo1.png
+!data/logo2.png
+!data/modelext.png
+
+# Audit / captures / caches générés
+data/captures/
+data/crashes/
+data/icons/
+data/saves/
+data/*.log
+data/active_save.txt
+data/game_options.json
+data/roster_columns.json
+data/futsal_manager.db
+tests/captures/
+tests/ui_*.png
+
+# Sauvegardes de code et artefacts de compilation
+code_backups/
+build_assets/
+build_dist/
+build_work/
+build_work_ed/
+build_spec/
+build_spec_ed/
+installer_output/
+release/
+*.spec
+
+# Système
+Thumbs.db
+Desktop.ini
+.DS_Store
