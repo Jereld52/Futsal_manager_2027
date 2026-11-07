@@ -5,6 +5,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, date
 
 from game_utils import (parse_iso, fmt_date_fr, fmt_datetime_fr, fmt_match_time, iso_today, rating20, stars5, round_money, format_euros)
+from immersion import ArenaSound, commentary_line, SOUND_FOR_CATEGORY
 
 from PySide6.QtCore import Qt, QTimer, QMimeData, QPointF, QRectF, QSize, Signal, QEvent, QPropertyAnimation, QDate, QEasingCurve, QTime, QByteArray
 
@@ -1171,6 +1172,8 @@ def style_for_theme(theme):
 def load_game_options():
 
     defaults={"theme":"Nuit violette","font_size":10,"window_mode":"Maximisé","difficulty":"Normale",
+
+              "sound_enabled":True,"sound_volume":55,
 
               "brief_cadence":"Hebdomadaire",
 
@@ -9736,6 +9739,11 @@ class MainWindow(QMainWindow):
 
         self.game_options = load_game_options()
 
+        self.arena_sound = ArenaSound(
+            DATA_DIR,
+            enabled=bool(self.game_options.get("sound_enabled", True)),
+            volume=float(self.game_options.get("sound_volume", 55) or 55) / 100.0)
+
         self.timer = QTimer(self); self.timer.timeout.connect(self.advance_minute)
 
         self._build_ui()
@@ -9831,6 +9839,10 @@ class MainWindow(QMainWindow):
             return
 
         self.save_active_career(show_notice=False)
+
+        try:
+            if getattr(self,"arena_sound",None): self.arena_sound.close()
+        except Exception: pass
 
         event.accept()
 
@@ -16563,7 +16575,15 @@ class MainWindow(QMainWindow):
 
         self.matchday_meta_label = QLabel("CHAMPIONNAT • JOURNÉE —"); self.matchday_meta_label.setObjectName("Muted")
 
-        top.addWidget(self.match_phase); top.addStretch(); top.addWidget(self.matchday_meta_label)
+        top.addWidget(self.match_phase); top.addStretch()
+        self.match_sound_btn=QPushButton("SON : ON")
+        self.match_sound_btn.setToolTip("Active/coupe l'ambiance sonore de la salle")
+        self.match_sound_btn.setStyleSheet("font-size:8pt;font-weight:900;padding:4px 9px;")
+        self.match_sound_btn.clicked.connect(self._toggle_match_sound)
+        top.addWidget(self.match_sound_btn)
+        top.addWidget(self.matchday_meta_label)
+        if hasattr(self, "arena_sound") and self.arena_sound is not None:
+            self.match_sound_btn.setText("SON : ON" if self.arena_sound.enabled else "SON : MUET")
 
         fl.addLayout(top)
 
@@ -16612,6 +16632,14 @@ class MainWindow(QMainWindow):
         self.match_clock_context = QLabel("Coup d'envoi en attente • calendrier de carrière"); self.match_clock_context.setObjectName("Muted"); self.match_clock_context.setAlignment(Qt.AlignCenter)
 
         fl.addWidget(self.match_clock_context)
+
+        self.commentary_label = QLabel("Le commentateur attend le coup d'envoi…")
+        self.commentary_label.setWordWrap(True)
+        self.commentary_label.setAlignment(Qt.AlignCenter)
+        self.commentary_label.setStyleSheet(
+            "background:#101a2b;border:1px solid #2b3d58;border-left:3px solid #7fb7e8;"
+            "border-radius:8px;padding:5px 10px;color:#dce8f8;font-size:8.5pt;font-weight:700;")
+        fl.addWidget(self.commentary_label)
 
         self.match_video_report=QLabel("")
         self.match_video_report.setObjectName("Muted"); self.match_video_report.setWordWrap(True)
@@ -16779,6 +16807,10 @@ class MainWindow(QMainWindow):
         self.event_log = QTextEdit(); self.event_log.setReadOnly(True); self.event_log.setPlaceholderText("Les événements du match apparaîtront ici.")
 
         self.live_tab_box.addTab(self.event_log,"FIL DU MATCH")
+
+        self.commentary_log = QTextEdit(); self.commentary_log.setReadOnly(True)
+        self.commentary_log.setPlaceholderText("Le commentaire live apparaîtra ici.")
+        self.live_tab_box.addTab(self.commentary_log,"COMMENTAIRE")
 
         teams_page=QWidget(); teams_l=QVBoxLayout(teams_page); teams_l.setContentsMargins(2,6,2,0); teams_l.setSpacing(4)
 
@@ -39296,6 +39328,11 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         self.score_label.setText("0  —  0"); self.clock_label.setText("00:00"); self.match_progress.setValue(0); self.match_phase.setText("AVANT-MATCH")
 
+        if hasattr(self,"commentary_log"):
+            self.commentary_log.clear()
+        if hasattr(self,"commentary_label"):
+            self.commentary_label.setText("Le commentateur attend le coup d'envoi…")
+
         if getattr(self, "match_pitch", None) is not None:
 
             # PURGE DE L'ANCIEN MATCH : le terrain 2D ne doit jamais montrer le
@@ -39324,9 +39361,9 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         dialog.setWindowTitle(f"Avant-match • {'Amical' if fixture_type=='friendly' else 'Journée '+str(fx['matchday'])}")
 
-        dialog.setMinimumWidth(820)
+        dialog.setMinimumWidth(900)
 
-        dialog.resize(900,560)
+        dialog.resize(960,680)
 
         root = QVBoxLayout(dialog); root.setContentsMargins(18,18,18,18); root.setSpacing(12)
 
@@ -39353,6 +39390,19 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         mh.addWidget(home_badge); mh.addWidget(fixture_label,1); mh.addWidget(away_badge)
 
         root.addWidget(match_card)
+
+        atmo = self._prematch_atmosphere(fx, is_home, opponent)
+        self._prematch_atmo = atmo
+
+        if atmo.get("html"):
+
+            atmo_box = QFrame(); atmo_box.setObjectName("Panel")
+
+            al = QVBoxLayout(atmo_box); al.setContentsMargins(12,9,12,9); al.setSpacing(3)
+
+            atmosphere = QLabel(atmo["html"]); atmosphere.setTextFormat(Qt.RichText); atmosphere.setWordWrap(True)
+
+            al.addWidget(atmosphere); root.addWidget(atmo_box)
 
 
 
@@ -39746,6 +39796,37 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
 
 
+    def _toggle_match_sound(self):
+        sound=getattr(self,"arena_sound",None)
+        if sound is None:
+            return
+        enabled=not sound.enabled
+        sound.set_enabled(enabled)
+        self.game_options["sound_enabled"]=bool(enabled)
+        try: save_game_options(self.game_options)
+        except Exception as exc: self.log_error("save_sound_option",exc)
+        if hasattr(self,"match_sound_btn"):
+            self.match_sound_btn.setText("SON : ON" if enabled else "SON : MUET")
+        if enabled and self.match_state and not self.match_state.get("finished",True):
+            sound.start_ambience()
+        self.show_game_message("Ambiance","Sons de salle activés." if enabled else "Sons de salle coupés.","info")
+
+    def _append_commentary(self, line, category, elapsed):
+        if not line or not hasattr(self, "commentary_label"):
+            return
+        stamp=f"{int(elapsed)//60:02d}:{int(elapsed)%60:02d}"
+        colors={"goal":"#8fe0a3","shot":"#ffd98a","save":"#9cc9ff",
+                "yellow_card":"#ffd166","red":"#ff9daa","fulltime":"#c9a8ff",
+                "halftime":"#c9a8ff","kickoff":"#7fb7e8"}
+        color=colors.get(str(category or ""),"#dce8f8")
+        self.commentary_label.setText(f"{stamp}  •  {line}")
+        try:
+            self.commentary_log.append(
+                f"<span style='color:{color};'><b>{stamp}</b> — {html.escape(line)}</span>")
+            self.commentary_log.ensureCursorVisible()
+        except Exception:
+            pass
+
     def log_match_event(self, markup, category="event", minute=None):
 
         self.event_log.append(markup)
@@ -39775,6 +39856,32 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             "text": plain,
 
         })
+
+        try:
+
+            if category not in ("info","lineup"):
+
+                line=commentary_line(category,plain)
+
+                self._append_commentary(line,category,elapsed)
+
+            sound_name=SOUND_FOR_CATEGORY.get(str(category or ""))
+
+            if sound_name and getattr(self,"arena_sound",None) is not None:
+
+                if category=="kickoff" and elapsed<=1:
+
+                    self.arena_sound.start_ambience()
+
+                elif category=="fulltime":
+
+                    self.arena_sound.stop_ambience()
+
+                self.arena_sound.play(sound_name)
+
+        except Exception as exc:
+
+            self.log_error("match_commentary",exc)
 
 
 
@@ -41105,6 +41212,71 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         if fans<55: return "supporters"
         return "assumer"
 
+    def _prematch_atmosphere(self, fx, is_home, opponent):
+        """Petite mise en scène avant-match : salle, vestiaire, adversaire, enjeu."""
+        try:
+            conn = db()
+            season = int((conn.execute("SELECT season FROM club WHERE id=1").fetchone() or {"season": 1})["season"] or 1)
+            own = conn.execute("SELECT reputation,division FROM club WHERE id=1").fetchone()
+            opp_id = int(fx["away_club_id"] if is_home else fx["home_club_id"])
+            opp_club = conn.execute("SELECT reputation,division FROM club WHERE id=?", (opp_id,)).fetchone()
+            facility = conn.execute("SELECT arena_level FROM facility WHERE id=1").fetchone()
+            rank_row = conn.execute(
+                "SELECT COUNT(*)+1 n FROM league_standing s JOIN club c ON c.id=s.club_id "
+                "WHERE c.division=? AND s.pts > COALESCE((SELECT pts FROM league_standing WHERE club_id=1),0)",
+                (int(own["division"] or 1),)).fetchone()
+            rank = int(rank_row["n"] if rank_row else 8)
+            target_row = conn.execute("SELECT value FROM meta WHERE key='board_objective_rank'").fetchone()
+            target = int(target_row["value"]) if target_row else 8
+            morale = conn.execute("SELECT AVG(morale) m, AVG(condition) c FROM player WHERE club_id=1").fetchone()
+            star = conn.execute(
+                "SELECT first_name,last_name,market_value FROM player WHERE club_id=? "
+                "AND COALESCE(retired,0)=0 ORDER BY market_value DESC LIMIT 1", (opp_id,)).fetchone()
+            rival_row = conn.execute("SELECT value FROM meta WHERE key='rival_club_id'").fetchone()
+            try: rival_id = int(rival_row["value"] or 0) if rival_row else 0
+            except (TypeError, ValueError): rival_id = 0
+            form_rows = conn.execute(
+                "SELECT home_club_id,away_club_id,home_goals,away_goals FROM fixture "
+                "WHERE played=1 AND season=? AND COALESCE(fixture_type,'championship')='championship' "
+                "AND (home_club_id=? OR away_club_id=?) ORDER BY fixture_date DESC LIMIT 5",
+                (season, opp_id, opp_id)).fetchall()
+            form = []
+            for row in reversed(form_rows):
+                home = int(row["home_club_id"]) == opp_id
+                ours = int((row["home_goals"] if home else row["away_goals"]) or 0)
+                theirs = int((row["away_goals"] if home else row["home_goals"]) or 0)
+                form.append("V" if ours > theirs else "N" if ours == theirs else "D")
+            conn.close()
+            derby = bool(rival_id and opp_id == rival_id)
+            arena = int(facility["arena_level"] or 1) if facility else 1
+            rep = int(opp_club["reputation"] or 30) if opp_club else 30
+            cap = max(300, int(facility_capacity(arena if is_home else 2, rep)))
+            fill = min(1.0, 0.74 + (0.17 if derby else 0) + (0.06 if rank <= target else 0))
+            attendance = int(cap * fill)
+            mood = "Le vestiaire est électrique : personne ne veut lâcher ce match." if derby else (
+                "Le groupe est détendu, concentré sur le plan de jeu." if int((morale["m"] if morale else 70) or 70) >= 72
+                else "Le vestiaire est tendu : il faudra vite rassurer les joueurs.")
+            form_txt = " ".join(form) if form else "—"
+            star_txt = (f"{star['first_name']} {star['last_name']} est leur arme principale."
+                        if star is not None else "Leur effectif reste compact et difficile à manœuvrer.")
+            stakes = ("Derby : la suprématie locale est en jeu." if derby
+                      else f"Objectif du board : top {target}. Position actuelle : {rank}e.")
+            html_txt = (
+                f"<div style='color:#dce8f8;font-size:8.5pt;line-height:1.45;'>"
+                f"<b style='color:#8fd3ff;'>ARRIVÉE AU GYMNASE</b> — "
+                f"{'Salle comble' if fill>=0.92 else 'Belle affluence'} : "
+                f"{attendance:,} spectateurs attendus, {int(fill*100)} % de remplissage.<br>"
+                f"<b style='color:#ffd98a;'>VESTIAIRE</b> — {mood}<br>"
+                f"<b style='color:#ff9daa;'>ADVERSAIRE</b> — {opponent} reste sur {form_txt}. {star_txt}<br>"
+                f"<b style='color:#9fd2b6;'>ENJEU</b> — {stakes}"
+                f"</div>").replace(",", " ")
+            return {"html": html_txt, "attendance": attendance, "rank": rank,
+                    "target": target, "derby": derby, "form": form_txt}
+        except Exception as exc:
+            self.log_error("prematch_atmosphere", exc)
+            return {"html": "", "attendance": 0, "rank": 0, "target": 8,
+                    "derby": bool(getattr(self, "_current_derby", False)), "form": ""}
+
     def _show_prematch_talk(self,fx=None):
         """Causerie d'avant-match : plusieurs tons, effets réels avant le coup d'envoi."""
         self._prematch_mods={}
@@ -41136,6 +41308,14 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             sub=QLabel(f"{context}. Choisis le ton avant le coup d'envoi : le choix agit sur le moral, la forme et le début de match.")
             sub.setObjectName("Muted"); sub.setWordWrap(True)
             root.addWidget(head); root.addWidget(sub)
+
+            quote_text = ("« On joue pour la salle et pour le maillot. Ce soir, on ne lâche rien. »"
+                          if derby else
+                          "« On a travaillé toute la semaine pour ce moment. Restons calmes et appliqués. »")
+            quote = QLabel(f"{quote_text}  —  le capitaine")
+            quote.setWordWrap(True)
+            quote.setStyleSheet("color:#bcd2e8;font-style:italic;font-size:8.5pt;")
+            root.addWidget(quote)
             def _pick(kind):
                 chosen["kind"]=kind; dlg.accept()
             for talk in PREMATCH_TALKS:
@@ -41178,6 +41358,88 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         except Exception: pass
         return msg
 
+    def _show_postmatch_dressing_room(self, report, state):
+        """Scène de vestiaire après le match. Retourne True pour aller en presse."""
+        if getattr(self, "_fast_forward_match", False):
+            return False
+        try:
+            outcome = str(report.get("outcome", "NUL"))
+            hg = int(state.get("hg", 0) or 0) if isinstance(state, dict) else 0
+            ag = int(state.get("ag", 0) or 0) if isinstance(state, dict) else 0
+            is_home = bool(state.get("is_home", True)) if isinstance(state, dict) else True
+            ours, theirs = (hg, ag) if is_home else (ag, hg)
+            lineup = list(state.get("lineup") or []) if isinstance(state, dict) else []
+            goals = {int(k): int(v) for k, v in (state.get("player_goals") or {}).items()} if isinstance(state, dict) else {}
+            saves = {int(k): int(v) for k, v in (state.get("player_saves") or {}).items()} if isinstance(state, dict) else {}
+            hero = max(lineup, key=lambda p: goals.get(int(p.get("id", 0)), 0), default=None)
+            keeper = next((p for p in lineup if str(p.get("position", "")) == "Gardien"), None)
+            captain = lineup[0] if lineup else None
+            if outcome == "VICTOIRE":
+                mood = "La musique est à fond, les sourires sont revenus. Le groupe savoure."
+                cap_quote = "« On a fait le job. On savoure ce soir, mais on reste humbles. »"
+            elif outcome == "DÉFAITE":
+                mood = "Le silence domine. Les joueurs savent qu'il faudra répondre vite."
+                cap_quote = "« On encaisse, on regarde les erreurs, et on repart au travail. »"
+            else:
+                mood = "Un mélange de frustration et de soulagement. Le point est pris, rien de plus."
+                cap_quote = "« Il nous a manqué un dernier geste, mais l'état d'esprit est là. »"
+            hero_quote = (f"« {goals.get(int(hero.get('id', 0)), 0)} but(s), c'est pour le groupe et pour la salle. »"
+                          if hero is not None and goals.get(int(hero.get("id", 0)), 0)
+                          else "« On a donné ce qu'on avait. Le collectif a tenu. »")
+            keeper_quote = (f"« {saves.get(int(keeper.get('id', 0)), 0)} arrêt(s) : j'ai essayé de rester grand dans les moments chauds. »"
+                            if keeper is not None and saves.get(int(keeper.get("id", 0)), 0)
+                            else "« J'ai essayé de rester concentré jusqu'au bout. »")
+
+            dlg = QDialog(self)
+            dlg.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            dlg.setModal(True)
+            dlg.setMinimumWidth(620)
+            root = QVBoxLayout(dlg); root.setContentsMargins(18, 14, 18, 14); root.setSpacing(8)
+            head = QLabel(f"VESTIAIRE  •  {outcome}  {ours}-{theirs}")
+            head.setStyleSheet("font-size:13pt;font-weight:1000;letter-spacing:.6px;color:"
+                               + ("#7de0aa" if outcome == "VICTOIRE" else "#ff9daa" if outcome == "DÉFAITE" else "#ffd166") + ";")
+            atmos = QLabel(mood); atmos.setObjectName("Muted"); atmos.setWordWrap(True)
+            root.addWidget(head); root.addWidget(atmos)
+
+            def player_row(player, quote):
+                if player is None:
+                    return
+                row = QFrame(); row.setObjectName("MiniPlayer")
+                row.setStyleSheet("QFrame#MiniPlayer{background:#151d30;border:1px solid #303c58;border-radius:10px;}")
+                rl = QHBoxLayout(row); rl.setContentsMargins(8, 7, 8, 7); rl.setSpacing(9)
+                avatar = QLabel(); avatar.setFixedSize(42, 42); avatar.setAlignment(Qt.AlignCenter)
+                avatar.setPixmap(self.draw_player_avatar(player, 42))
+                col = QVBoxLayout(); col.setSpacing(1)
+                name = QLabel(f"{player.get('first_name','')} {player.get('last_name','')}")
+                name.setStyleSheet("font-weight:900;color:#f2f4fb;")
+                role = QLabel(str(player.get("position", ""))); role.setObjectName("Muted")
+                say = QLabel(quote); say.setWordWrap(True); say.setStyleSheet("color:#c9d7e8;font-style:italic;")
+                col.addWidget(name); col.addWidget(role); col.addWidget(say)
+                rl.addWidget(avatar); rl.addLayout(col, 1)
+                root.addWidget(row)
+
+            seen = set()
+            for player, quote in ((hero, hero_quote), (keeper, keeper_quote), (captain, cap_quote)):
+                if player is None:
+                    continue
+                pid = int(player.get("id", 0) or 0)
+                if pid and pid in seen:
+                    continue
+                if pid:
+                    seen.add(pid)
+                player_row(player, quote)
+
+            buttons = QHBoxLayout(); buttons.addStretch()
+            skip = QPushButton("PASSER"); skip.clicked.connect(dlg.reject)
+            press = QPushButton("CONFÉRENCE DE PRESSE  →"); press.setObjectName("Primary")
+            press.clicked.connect(dlg.accept)
+            buttons.addWidget(skip); buttons.addWidget(press)
+            root.addLayout(buttons)
+            return dlg.exec() == QDialog.Accepted
+        except Exception as exc:
+            self.log_error("postmatch_dressing_room", exc)
+            return True
+
     def _show_postmatch_interview(self,report,state):
         """Interview d'après-match : réponses adaptées au résultat."""
         try:
@@ -41194,11 +41456,13 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             ag=int(state.get("ag",0) or 0) if isinstance(state,dict) else 0
             is_home=bool(state.get("is_home",True)) if isinstance(state,dict) else True
             ours,thers=(hg,ag) if is_home else (ag,hg)
-            head=QLabel(f"INTERVIEW D'APRÈS-MATCH  •  {outcome} {ours}-{thers}")
+            head=QLabel(f"CONFÉRENCE DE PRESSE  •  {outcome} {ours}-{thers}")
             head.setStyleSheet("font-size:12pt;font-weight:1000;letter-spacing:.6px;color:#9cc9ff;")
             question={"VICTOIRE":"Comment jugez-vous cette victoire ?","DÉFAITE":"Comment analysez-vous cette défaite ?"}.get(outcome,"Ce match nul, quel regard portez-vous dessus ?")
             q=QLabel(question); q.setWordWrap(True); q.setStyleSheet("font-weight:900;color:#eaf0fb;")
-            root.addWidget(head); root.addWidget(q)
+            room=QLabel("Salle de presse du gymnase — les journalistes attendent ta réaction.")
+            room.setObjectName("Muted"); room.setWordWrap(True)
+            root.addWidget(head); root.addWidget(room); root.addWidget(q)
             def _pick(kind):
                 chosen["kind"]=kind; dlg.accept()
             for ans in answers:
@@ -41208,6 +41472,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             skip=QPushButton("PASSER"); skip.clicked.connect(dlg.reject); root.addWidget(skip)
             if dlg.exec()!=QDialog.Accepted or not chosen["kind"]: return
             self._apply_postmatch_answer(chosen["kind"],outcome)
+            self._show_postmatch_fans_question(outcome)
         except Exception as exc:
             self.log_error("postmatch_interview",exc)
 
@@ -41233,6 +41498,60 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
                 except Exception: pass
         self.show_game_message("Interview",ans["message"],"info")
         return ans["message"]
+
+    def _show_postmatch_fans_question(self, outcome):
+        """Deuxième question de la conférence : le mot aux supporters."""
+        try:
+            if getattr(self, "_fast_forward_match", False):
+                return
+            choices = (
+                ("merci", "REMERCIER LES SUPPORTERS",
+                 "« Merci pour l'ambiance. Ce point est aussi pour vous. »", 2),
+                ("besoin", "DEMANDER LEUR SOUTIEN",
+                 "« On a besoin de vous pour la suite. Poussez-nous. »", 1),
+                ("travail", "PROMETTRE DU TRAVAIL",
+                 "« On retourne au travail dès demain. »", 0),
+            )
+            dlg = QDialog(self); dlg.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            dlg.setModal(True); dlg.setFixedWidth(590)
+            root = QVBoxLayout(dlg); root.setContentsMargins(16, 14, 16, 14); root.setSpacing(7)
+            head = QLabel("CONFÉRENCE DE PRESSE  •  LE MOT AUX SUPPORTERS")
+            head.setStyleSheet("font-size:11.5pt;font-weight:1000;letter-spacing:.5px;color:#9cc9ff;")
+            q = QLabel("Un dernier mot pour les supporters ?")
+            q.setStyleSheet("font-weight:900;color:#eaf0fb;")
+            root.addWidget(head); root.addWidget(q)
+            chosen = {"value": None}
+            def pick(text, fans):
+                chosen["value"] = (text, fans); dlg.accept()
+            for _key, label, quote, fans in choices:
+                b = QPushButton(f"{label}\n{quote}")
+                b.setMinimumHeight(42); b.setStyleSheet("text-align:left;padding:5px 10px;")
+                b.clicked.connect(lambda checked=False, t=quote, f=fans: pick(t, f))
+                root.addWidget(b)
+            skip = QPushButton("PASSER"); skip.clicked.connect(dlg.reject); root.addWidget(skip)
+            if dlg.exec() != QDialog.Accepted or not chosen["value"]:
+                return
+            text, fans = chosen["value"]
+            c = None
+            try:
+                c = db()
+                if fans:
+                    row = c.execute("SELECT value FROM meta WHERE key='fan_confidence'").fetchone()
+                    base = int(row["value"]) if row else 55
+                    c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('fan_confidence',?)",
+                              (str(max(0, min(100, base + fans))),))
+                add_news(c, "Presse", text)
+                c.commit()
+            except Exception as exc:
+                self.log_error("postmatch_fans_answer", exc)
+            finally:
+                if c is not None:
+                    try: c.close()
+                    except Exception: pass
+            try: self.coach_status_label.setText(text)
+            except Exception: pass
+        except Exception as exc:
+            self.log_error("postmatch_fans_question", exc)
 
     def _show_halftime_talk(self):
         s=self.match_state
@@ -47220,6 +47539,10 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         self.match_progress.setValue(2400); self.match_banner.setVisible(False)
 
+        try:
+            if getattr(self,"arena_sound",None): self.arena_sound.stop_ambience()
+        except Exception: pass
+
         self.score_label.setText(f"{s['hg']}  —  {s['ag']}")
 
         self.start_btn.setText("MATCH TERMINÉ")
@@ -47250,8 +47573,21 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             self.log_error("derby_postmatch",_d_exc)
         self._current_derby=False
 
-        try: self._show_postmatch_interview(report,s)
-        except Exception as _iv_exc: self.log_error("postmatch_interview",_iv_exc)
+        show_press = True
+
+        try:
+
+            show_press = self._show_postmatch_dressing_room(report, s)
+
+        except Exception as _dr_exc:
+
+            self.log_error("postmatch_dressing_room", _dr_exc)
+
+        if show_press:
+
+            try: self._show_postmatch_interview(report,s)
+
+            except Exception as _iv_exc: self.log_error("postmatch_interview",_iv_exc)
 
         self.refresh_all()
 

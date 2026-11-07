@@ -9682,3 +9682,66 @@ désormais explicitement.
   avertissement « Éditeur inconnu ». Pour le supprimer, il faudra un certificat
   de signature de code.
 
+
+## Annexe HL - Immersion match day : avant-match, direct, vestiaire (07/11/2026)
+
+### DEMANDE
+- Avant-match + causerie.
+- Commentaire live + sons de salle.
+- Après-match : vestiaire + conférence de presse.
+
+### AVANT-MATCH
+- Le dialogue de confirmation affiche désormais une mise en scène :
+  - **ARRIVÉE AU GYMNASE** : affluence estimée et remplissage ;
+  - **VESTIAIRE** : ambiance selon derby / moral du groupe ;
+  - **ADVERSAIRE** : forme récente et joueur dangereux ;
+  - **ENJEU** : objectif du board et position actuelle.
+- La causerie d'avant-match garde ses effets réels et ajoute une citation du
+  capitaine (derby ou match normal).
+- Les données viennent de `league_standing`, `fixture`, `player`, `facility` et
+  `meta` (rival, objectif).
+
+### COMMENTAIRE LIVE + SONS
+- Nouveau module `immersion.py` :
+  - `commentary_line()` : lignes de commentaire courtes, nettoyées du HTML et
+    des timestamps, avec préfixes par catégorie (but, arrêt, carton, pause…).
+  - `ArenaSound` : WAV synthétisés à la première utilisation dans `data/audio`
+    (sifflet, buzzer, but, arrêt, frappe, foule, applaudissements).
+- Centre de match :
+  - bandeau de commentaire sous le chrono ;
+  - nouvel onglet **COMMENTAIRE** avec historique coloré ;
+  - bouton **SON : ON / SON : MUET**, choix conservé dans `game_options.json` ;
+  - ambiance de fond démarrée au coup d'envoi, arrêtée au coup de sifflet final ;
+  - sons déclenchés par les événements (but, arrêt, carton, temps mort, etc.).
+- Aucun asset externe. En mode hors écran ou avec `FM2027_NO_AUDIO=1`, tout est
+  silencieux et aucun WAV n'est créé (tests reproductibles).
+
+### APRÈS-MATCH
+- Nouvelle scène **VESTIAIRE** avant le rapport :
+  - ambiance selon le résultat ;
+  - citations du héros du match, du gardien et du capitaine ;
+  - avatars et score.
+- La conférence de presse s'ouvre ensuite si le joueur continue :
+  - première question adaptée au résultat (réponses existantes) ;
+  - deuxième question **« le mot aux supporters »** avec effet réel sur la
+    confiance des supporters et ajout dans les actualités.
+- `PASSER` permet de sauter la scène ; le mode accéléré ignore tout.
+
+### TESTS
+- Nouveau `tests/test_immersion.py` branché dans la suite :
+  1. commentaire nettoyé et préfixé ;
+  2. sons désactivés hors écran, aucun fichier créé ;
+  3. ticker + journal branchés sur un but ;
+  4. avant-match : salle, vestiaire, adversaire, enjeu ;
+  5. vestiaire accepté → passage en conférence.
+- `test_coaching_options.py` et `test_staff_delegations.py` restent OK
+  (causeries/interviews déléguées).
+- Suite complète : **94 suites PASS, 0 FAIL** · `data/error.log` **0 octet**.
+
+### CAPTURES
+- `apercu_avant_match.png` : arrivée, vestiaire, adversaire, enjeu.
+- `apercu_causerie.png` : citation du capitaine + tons de causerie.
+- `apercu_commentaire_live.png` : ticker, onglet COMMENTAIRE, bouton SON.
+- `apercu_vestiaire.png` : héros, gardien, capitaine.
+- `apercu_conference_presse.png` : salle de presse et première question.
+

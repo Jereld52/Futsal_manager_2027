@@ -59,6 +59,16 @@ Prérequis : Python 3.10+ et PySide6 6.7+ (`requirements.txt`).
 Les sauvegardes sont écrites **en continu** dans la base de la carrière ; le
 bouton de sauvegarde crée un point de reprise compacté.
 
+## Immersion (match day)
+
+- **Avant-match** : arrivée au gymnase, affluence estimée, ambiance du vestiaire,
+  forme de l'adversaire et enjeu du board, puis vérification du cinq et causerie.
+- **Direct** : bandeau de commentaire live + onglet COMMENTAIRE, sons de salle
+  synthétisés (sifflet, buzzer, but, arrêt, foule) et bouton **SON : ON/MUET**.
+- **Après-match** : scène de vestiaire (héros, gardien, capitaine), puis
+  conférence de presse en deux questions (réaction au résultat, mot aux supporters).
+- Les sons sont générés dans `data/audio` ; `FM2027_NO_AUDIO=1` les coupe.
+
 ## Tests
 
 ```text
