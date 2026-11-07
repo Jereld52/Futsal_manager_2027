@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, date
 
 from game_utils import (parse_iso, fmt_date_fr, fmt_datetime_fr, fmt_match_time, iso_today, rating20, stars5, round_money, format_euros)
 from immersion import ArenaSound, commentary_line, SOUND_FOR_CATEGORY
+from support import create_bug_report
 
 from PySide6.QtCore import Qt, QTimer, QMimeData, QPointF, QRectF, QSize, Signal, QEvent, QPropertyAnimation, QDate, QEasingCurve, QTime, QByteArray
 
@@ -17,7 +18,7 @@ from PySide6.QtWidgets import (
 
     QPushButton, QFrame, QStackedWidget, QTableWidget, QTableWidgetItem,
 
-    QHeaderView, QProgressBar, QComboBox, QTextEdit, QGridLayout,
+    QHeaderView, QProgressBar, QComboBox, QTextEdit, QPlainTextEdit, QGridLayout,
 
     QSplitter, QLineEdit, QListWidget, QListWidgetItem, QListView, QAbstractItemView, QTabWidget,
 
@@ -41,6 +42,8 @@ from ui_components import (ClubIdentityPreview, ClubSetupDialog, GameOptionsDial
 
 
 APP_NAME = "FUTSAL MANAGER"
+
+APP_VERSION = "2027.2"
 
 
 
@@ -13547,13 +13550,173 @@ class MainWindow(QMainWindow):
 
 
 
+    def open_bug_report(self, parent=None):
+        """Crée un ZIP de diagnostic (logs + sauvegarde optionnelle)."""
+        dlg = QDialog(parent or self)
+        dlg.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+        dlg.setModal(True)
+        dlg.setMinimumWidth(560)
+        root = QVBoxLayout(dlg); root.setContentsMargins(18, 16, 18, 16); root.setSpacing(8)
+        title = QLabel("SIGNALER UN BUG")
+        title.setStyleSheet("font-size:14pt;font-weight:1000;letter-spacing:.5px;color:#f2c46d;")
+        hint = QLabel(
+            "Décris ce qui s'est passé. Le rapport contient les journaux "
+            "d'erreur, la version et, si tu l'autorises, une copie de la "
+            "sauvegarde active. Rien n'est envoyé automatiquement.")
+        hint.setObjectName("Muted"); hint.setWordWrap(True)
+        desc = QPlainTextEdit()
+        desc.setPlaceholderText("Ex. : au début du match, le commentaire affiche…")
+        desc.setMinimumHeight(130)
+        include = QCheckBox("Inclure une copie de la sauvegarde active (recommandé)")
+        include.setChecked(True)
+        path_label = QLabel(f"Rapport créé dans : {os.path.join(DATA_DIR, 'reports')}")
+        path_label.setObjectName("Muted"); path_label.setWordWrap(True)
+        root.addWidget(title); root.addWidget(hint); root.addWidget(desc)
+        root.addWidget(include); root.addWidget(path_label)
+        buttons = QHBoxLayout(); buttons.addStretch()
+        cancel = QPushButton("ANNULER"); cancel.clicked.connect(dlg.reject)
+        create = QPushButton("CRÉER LE RAPPORT"); create.setObjectName("Primary")
+        create.clicked.connect(dlg.accept)
+        buttons.addWidget(cancel); buttons.addWidget(create)
+        root.addLayout(buttons)
+        if dlg.exec() != QDialog.Accepted:
+            return
+        try:
+            extra = {"page": getattr(self, "stack", None).currentIndex() if hasattr(self, "stack") else "",
+                     "match": "en cours" if getattr(self, "match_state", None) and not self.match_state.get("finished", True) else ""}
+            path = create_bug_report(
+                os.path.join(DATA_DIR, "reports"), desc.toPlainText(),
+                data_dir=DATA_DIR, save_path=active_save_path(),
+                include_save=include.isChecked(), app_version=APP_VERSION,
+                extra=extra)
+            self.show_game_message(
+                "Rapport de bug",
+                f"Rapport créé :\n{path}\n\nTu peux joindre ce fichier à ton retour de bêta.",
+                "success")
+        except Exception as exc:
+            self.log_error("bug_report", exc)
+            self.show_game_message("Rapport impossible", str(exc), "error")
+
+    def _onboarding_steps(self):
+        try:
+            conn = db()
+            club = conn.execute("SELECT season FROM club WHERE id=1").fetchone()
+            season = int(club["season"] or 1) if club else 1
+            played = int(conn.execute(
+                "SELECT COUNT(*) n FROM fixture WHERE season=? AND played=1 "
+                "AND COALESCE(fixture_type,'championship')='championship' "
+                "AND (home_club_id=1 OR away_club_id=1)", (season,)).fetchone()["n"] or 0)
+            talk = str(self._meta_value(conn, "onboarding_talk_done") or "") == "1"
+            market = str(self._meta_value(conn, "onboarding_transfer_seen") or "") == "1"
+            conn.close()
+        except Exception:
+            played = 0; talk = market = False
+        try:
+            lineup = len(self._selected_lineup_ids()) >= 5
+        except Exception:
+            lineup = False
+        return [
+            ("lineup", "Compose ton cinq de départ", lineup, "TACTIQUES", 2),
+            ("talk", "Choisis une causerie avant le coup d'envoi", talk, "MATCH", 3),
+            ("match", "Joue ton premier match", played > 0, "MATCH", 3),
+            ("market", "Repère une recrue au mercato", market, "MERCATO", 7),
+        ], played
+
+    def open_onboarding(self, *_args):
+        """Guide des 3 premiers jours, accessible depuis la Direction sportive."""
+        try:
+            steps, played = self._onboarding_steps()
+            dlg = QDialog(self)
+            dlg.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
+            dlg.setModal(True)
+            dlg.setMinimumWidth(640)
+            root = QVBoxLayout(dlg); root.setContentsMargins(18, 16, 18, 16); root.setSpacing(8)
+            head = QLabel("PREMIERS PAS  •  TES 3 PREMIERS JOURS")
+            head.setStyleSheet("font-size:14pt;font-weight:1000;letter-spacing:.5px;color:#9cc9ff;")
+            intro = QLabel(
+                "Pas besoin de tout maîtriser tout de suite. Quatre gestes suffisent "
+                "pour lancer ta carrière ; le reste viendra avec les matchs.")
+            intro.setObjectName("Muted"); intro.setWordWrap(True)
+            root.addWidget(head); root.addWidget(intro)
+            for key, label, done, action, page in steps:
+                row = QFrame(); row.setObjectName("OptionRow")
+                row.setStyleSheet("QFrame#OptionRow{background:#101a27;border:1px solid #24344a;border-radius:9px;}")
+                rl = QHBoxLayout(row); rl.setContentsMargins(10, 7, 10, 7); rl.setSpacing(9)
+                mark = QLabel("✔" if done else "○")
+                mark.setFixedWidth(20); mark.setAlignment(Qt.AlignCenter)
+                mark.setStyleSheet("font-size:12pt;font-weight:1000;color:%s;" % ("#7de0aa" if done else "#7f93ad"))
+                text = QLabel(label); text.setWordWrap(True)
+                text.setStyleSheet("color:%s;font-weight:700;" % ("#7de0aa" if done else "#e8eef7"))
+                btn = QPushButton(action)
+                btn.setObjectName("settings_mini")
+                btn.setMinimumWidth(92)
+                btn.clicked.connect(lambda checked=False, p=page, k=key: self._onboarding_go(dlg, p, k))
+                rl.addWidget(mark); rl.addWidget(text, 1); rl.addWidget(btn)
+                root.addWidget(row)
+            if played >= 1:
+                hint = QLabel("Tu as déjà joué : ce guide peut être fermé sans risque.")
+                hint.setObjectName("Muted"); hint.setWordWrap(True)
+                root.addWidget(hint)
+            footer = QHBoxLayout(); footer.addStretch()
+            later = QPushButton("PLUS TARD"); later.clicked.connect(dlg.reject)
+            never = QPushButton("NE PLUS AFFICHER"); never.clicked.connect(lambda: self._dismiss_onboarding(dlg))
+            footer.addWidget(later); footer.addWidget(never); root.addLayout(footer)
+            dlg.exec()
+        except Exception as exc:
+            self.log_error("onboarding", exc)
+
+    def _onboarding_go(self, dlg, page, key):
+        try:
+            dlg.accept()
+        except Exception:
+            pass
+        if key == "market":
+            try:
+                c = db()
+                c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('onboarding_transfer_seen','1')")
+                c.commit(); c.close()
+            except Exception:
+                pass
+        self.show_page(int(page))
+
+    def _dismiss_onboarding(self, dlg):
+        try:
+            c = db()
+            c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('onboarding_dismissed','1')")
+            c.commit(); c.close()
+        except Exception:
+            pass
+        try: dlg.accept()
+        except Exception: pass
+
+    def maybe_show_onboarding(self):
+        """Affiche le guide une seule fois, après le premier lancement d'une carrière."""
+        try:
+            if os.environ.get("QT_QPA_PLATFORM", "") == "offscreen":
+                return
+            if getattr(self, "app_stack", None) is None or self.app_stack.currentWidget() is not self.game_shell:
+                return
+            _steps, _played = self._onboarding_steps()
+            if _played >= 3:
+                return
+            c = db()
+            if str(self._meta_value(c, "onboarding_dismissed") or "") == "1":
+                c.close(); return
+            if str(self._meta_value(c, "onboarding_auto_shown") or "") == "1":
+                c.close(); return
+            c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('onboarding_auto_shown','1')")
+            c.commit(); c.close()
+            QTimer.singleShot(800, self.open_onboarding)
+        except Exception as exc:
+            self.log_error("maybe_onboarding", exc)
+
     def open_start_options(self):
 
         """Options accessibles DEPUIS L'ÉCRAN D'ACCUEIL (retour joueur) :
 
         thème, taille du texte et mode de fenêtre sans charger une carrière."""
 
-        dlg=GameOptionsDialog(self.game_options,self)
+        dlg=GameOptionsDialog(self.game_options,self,bug_cb=self.open_bug_report)
 
         if dlg.exec()!=QDialog.Accepted: return
 
@@ -13600,7 +13763,7 @@ class MainWindow(QMainWindow):
             _c=db(); _r=_c.execute("SELECT kit_pattern FROM club WHERE id=1").fetchone(); _c.close()
             if _r and _r["kit_pattern"]: opts["kit_pattern"]=_r["kit_pattern"]
         except Exception: pass
-        dlg=GameOptionsDialog(opts,self,cheat_cb=self.apply_cheat,kit_cb=self.set_club_kit)
+        dlg=GameOptionsDialog(opts,self,cheat_cb=self.apply_cheat,kit_cb=self.set_club_kit,bug_cb=self.open_bug_report)
 
         if dlg.exec()!=QDialog.Accepted: return
 
@@ -14246,6 +14409,11 @@ class MainWindow(QMainWindow):
         self.dashboard_welcome_line.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
         self.dashboard_welcome_line.setWordWrap(True)
         climate_head.addWidget(climate_cap); climate_head.addWidget(self.dashboard_welcome_line,1)
+        self.dashboard_onboarding_btn=QPushButton("PREMIERS PAS")
+        self.dashboard_onboarding_btn.setObjectName("settings_mini")
+        self.dashboard_onboarding_btn.setToolTip("Guide des 3 premiers jours : cinq, causerie, match, mercato")
+        self.dashboard_onboarding_btn.clicked.connect(self.open_onboarding)
+        climate_head.addWidget(self.dashboard_onboarding_btn)
         cl.addLayout(climate_head)
 
         gauges_row=QHBoxLayout(); gauges_row.setSpacing(7)
@@ -41347,6 +41515,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             if derby:
                 c.execute("UPDATE player SET morale=MIN(100,morale+2) WHERE club_id=1")
                 msg+=" Derby : le vestiaire est encore plus concerné (moral +2)."
+            c.execute("INSERT OR REPLACE INTO meta(key,value) VALUES('onboarding_talk_done','1')")
             add_news(c,"Vestiaire",msg); c.commit()
         except Exception as exc:
             self.log_error("apply_prematch_talk",exc)
@@ -47705,6 +47874,7 @@ def main():
             win._reveal_anim=reveal
         except Exception:
             pass
+        QTimer.singleShot(1200, win.maybe_show_onboarding)
 
     splash_paths=[os.path.join(DATA_DIR,"jgames.png"),os.path.join(ASSET_DIR,"jgames.png"),
               os.path.join(DATA_DIR,"intro1.png"),os.path.join(ASSET_DIR,"intro1.png")]

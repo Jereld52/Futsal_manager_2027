@@ -9745,3 +9745,59 @@ désormais explicitement.
 - `apercu_vestiaire.png` : héros, gardien, capitaine.
 - `apercu_conference_presse.png` : salle de presse et première question.
 
+
+## Annexe HM - QA immersion, rapport de bug et onboarding (07/11/2026)
+
+### 1) QA IMMERSION
+- Nouveau `tests/test_immersion_flow.py` : parcours complet avec une vraie
+  sauvegarde copiée :
+  1. avant-match accepté → match lancé ;
+  2. commentaire de coup d'envoi présent, chrono/timer actifs ;
+  3. fin de match : vestiaire et presse ignorés proprement, rapport enregistré,
+     `error.log` à 0.
+- Vérifications complémentaires :
+  - `tests/test_immersion.py` : commentaire, sons coupés hors écran, avant-match,
+    vestiaire ;
+  - génération réelle des WAV testée à part (7 fichiers, QSoundEffect chargé) ;
+  - captures d'écran des 5 scènes.
+- Petits bugs corrigés pendant la QA :
+  - doublon possible du même joueur dans le vestiaire (héros = capitaine) ;
+  - en-tête de la presse renommé **CONFÉRENCE DE PRESSE** ;
+  - import manquant `QPlainTextEdit` pour le formulaire de rapport.
+
+### 2) RAPPORT DE BUG
+- Nouveau `support.py` : `create_bug_report()` construit un ZIP autonome avec :
+  - `rapport.txt` (version, OS, Python/PySide6, club/saison/date, description) ;
+  - `error.log`, `fault.log`, `game_options.txt`, `ui_trace.log` si présents ;
+  - **copie optionnelle de la sauvegarde active** via `sqlite3.backup` (jamais
+    le fichier original).
+- UI : bouton **SIGNALER UN BUG** dans les options (accueil et en jeu), dialogue
+  avec description et case « inclure la sauvegarde » cochée par défaut.
+- Les rapports vont dans `data/reports/rapport_bug_AAAAMMJJ_HHMMSS.zip`.
+- `tests/test_bug_report.py` : contenu du ZIP, copie SQLite valide, sauvegarde
+  intacte, option sans copie.
+
+### 3) ONBOARDING
+- Panneau **PREMIERS PAS** accessible depuis la Direction sportive et affiché
+  une seule fois après le premier lancement d'une carrière (hors écran/tests :
+  auto-affichage désactivé).
+- Quatre étapes suivies en base :
+  1. composer le cinq ;
+  2. choisir une causerie avant-match ;
+  3. jouer le premier match ;
+  4. repérer une recrue au mercato.
+- Boutons directs TACTIQUES / MATCH / MERCATO, **PLUS TARD** et **NE PLUS
+  AFFICHER**. L'auto-affichage s'arrête après 3 matchs de championnat.
+- `tests/test_onboarding.py` : 4 étapes, causerie/mercato marqués, pas
+  d'auto-affichage en mode test.
+
+### VALIDATION
+- Suite complète : **97 suites PASS, 0 FAIL** · `RESULT : ALL OK` ·
+  `data/error.log` **0 octet**.
+
+### CAPTURES
+- `apercu_onboarding.png`, `apercu_rapport_bug.png`
+- `apercu_avant_match.png`, `apercu_causerie.png`,
+  `apercu_commentaire_live.png`, `apercu_vestiaire.png`,
+  `apercu_conference_presse.png`
+

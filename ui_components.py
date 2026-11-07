@@ -1172,7 +1172,8 @@ class HelpPanel(QWidget):
 class GameOptionsDialog(QDialog):
     """Options du jeu : presentation sobre, cartes lisibles et onglets clairs."""
 
-    def __init__(self, options, club, parent=None, cheat_cb=None, kit_cb=None):
+    def __init__(self, options, club, parent=None, cheat_cb=None, kit_cb=None,
+                 bug_cb=None):
         super().__init__(parent)
         self.setWindowTitle("Options du jeu")
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
@@ -1471,6 +1472,12 @@ class GameOptionsDialog(QDialog):
         note = QLabel("Les réglages sont enregistrés dans options.json.")
         note.setObjectName("Muted"); note.setStyleSheet("font-size:7.5pt;")
         footer.addWidget(note); footer.addStretch()
+        if bug_cb:
+            bug = QPushButton("SIGNALER UN BUG")
+            bug.setObjectName("settings_mini")
+            bug.setToolTip("Créer un ZIP avec les logs et, si tu veux, la sauvegarde active.")
+            bug.clicked.connect(lambda: bug_cb(self))
+            footer.addWidget(bug)
         cancel = QPushButton("ANNULER"); cancel.setMinimumHeight(40); cancel.setMinimumWidth(120)
         cancel.clicked.connect(self.reject)
         save = QPushButton("ENREGISTRER"); save.setObjectName("Primary")

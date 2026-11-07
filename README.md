@@ -67,6 +67,10 @@ bouton de sauvegarde crée un point de reprise compacté.
   synthétisés (sifflet, buzzer, but, arrêt, foule) et bouton **SON : ON/MUET**.
 - **Après-match** : scène de vestiaire (héros, gardien, capitaine), puis
   conférence de presse en deux questions (réaction au résultat, mot aux supporters).
+- **PREMIERS PAS** : guide des 3 premiers jours (cinq, causerie, premier match,
+  mercato), affiché une fois et accessible depuis la Direction sportive.
+- **Signaler un bug** : bouton dans les options, crée un ZIP avec logs, version
+  et copie optionnelle de la sauvegarde active.
 - Les sons sont générés dans `data/audio` ; `FM2027_NO_AUDIO=1` les coupe.
 
 ## Tests
