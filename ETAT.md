@@ -9801,3 +9801,79 @@ désormais explicitement.
   `apercu_commentaire_live.png`, `apercu_vestiaire.png`,
   `apercu_conference_presse.png`
 
+
+## Annexe HN - Audit moteur / equilibrage (07/11/2026)
+
+### 1) PROTOCOLE
+- Trois echantillons deterministes, hors ecran, sans toucher aux sauvegardes :
+  1. **800 matchs** avec appariements aleatoires dans l'univers (comparaison
+     avant/apres) ;
+  2. **1200 matchs** stratifies (favoris, divisions, cartons, 10 m) ;
+  3. **1320 matchs intra-division** (conditions reelles de championnat).
+- Diagnostic supplementaire : distribution des fautes par equipe et des 10 m
+  par match, grace a deux compteurs non intrusifs ajoutes a l'etat d'equipe
+  (`fouls`, `ten_meter`).
+
+### 2) CE QUE L'AUDIT A REVELE
+- **Regle du 10 m incorrecte** : le compteur de fautes etait remis a zero au
+  6e coup franc. Une mi-temps ne pouvait donc produire qu'un seul 10 m, alors
+  que la regle futsal accorde un 10 m pour la 6e faute **et chacune des
+  suivantes**.
+- **Fautes trop dispersees** : jusqu'a 18 fautes pour une equipe dans un match,
+  ce qui produisait des fins de mi-temps irrealistes.
+- Le reste etait dans les clous : buts, avantage du terrain, cartons, favoris.
+
+### 3) CORRECTIONS
+- `match_engine.py` :
+  - 10 m accorde a chaque faute a partir de la 6e de la mi-temps ;
+  - le 10 m compte desormais comme une frappe (cadree si but ou arret) ;
+  - frein de prudence : a partir de 5 fautes dans la mi-temps, la probabilite
+    de faute est reduite (x0,65), comme une equipe qui evite le 10 m ;
+  - compteurs `fouls` et `ten_meter` exposes pour les audits.
+- `app.py` (match en direct) : meme frein de prudence, et le journal affiche
+  desormais la bonne faute (« 7e faute cumulee », plus « 6e » a chaque fois).
+- Aucun changement aux sauvegardes, a `data/active_save.txt` ou aux builds.
+
+### 4) MESURES AVANT / APRES (800 matchs, meme protocole)
+| Indicateur | Avant | Apres |
+|---|---|---|
+| Buts / match | 4,88 | 4,92 |
+| 1X2 | 44,6 / 16,4 / 39,0 % | 45,5 / 15,6 / 38,9 % |
+| Tirs (cadres) | 33,1 (17,0) | 33,8 (17,5) |
+| Arrets / corners | 12,5 / 4,4 | 12,8 / 4,4 |
+| Cartons (rouges) | 3,58 (0,21) | 3,45 (0,21) |
+| Buts sur 10 m | 0,14 | 0,19 |
+| Clean sheets / 0-0 | 22,2 % / 0,8 % | 21,0 % / 0,9 % |
+| Matchs a 8 buts et + | 12,5 % | 13,1 % |
+
+### 5) MESURES INTRADIVISION (1320 matchs, conditions de championnat)
+- **4,69 buts/match**, 33,8 tirs, 45,6 / 18,6 / 35,8 % (domicile/nul/exterieur).
+- Par division : 4,46 a 5,01 buts/match ; ecart domicile/extérieur stable.
+- **11,7 fautes/match** (5,9 par equipe), **3,35 cartons** (3,16 jaunes,
+  0,19 rouge).
+- **10 m : 0,80 tir/match**, 0,196 but, **24,6 % de conversion**, et 35,8 % des
+  matchs avec au moins un 10 m.
+- 18,1 % de clean sheets, 0,6 % de 0-0, 9,5 % de matchs a 8 buts et plus.
+- Favoris (reputation) : +20 -> 79,2 % de victoires a domicile ; +10 a 19 ->
+  64,2 % ; equilibre -> 47,9 / 15,7 / 36,4 % ; outsider -20 -> 20,5 %.
+- Le taux de nuls global plus bas (15,6 %) vient des appariements aleatoires
+  entre divisions ; en conditions reelles (intra-division) il remonte a 18,6 %.
+
+### 6) TEST DE REGRESSION
+- Nouveau `tests/test_engine_balance.py` (2 s, sans base de donnees) :
+  1. buts/match, 1X2, tirs, arrets, clean sheets, 0-0, matchs a 8 buts ;
+  2. fautes, cartons, rouges ;
+  3. 10 m avec profil discipline ;
+  4. profil agressif : plusieurs 10 m dans une mi-temps possible (max >= 3),
+     conversion et coherence fautes/10 m ;
+  5. favori nettement superieur : victoires et exploits bornes ;
+  6. determinisme du score, des tirs, des fautes et des buteurs.
+- Ajoute a `tests/run_tests.py` (98 suites).
+
+### 7) VALIDATION
+- Suite complete : **98 suites PASS, 0 FAIL** - `RESULT : ALL OK` -
+  `data/error.log` **0 octet** (554 s).
+- `test_balance_soak.py` (saison complete) : 599 matchs simules,
+  4,68 buts/match, 0 erreur.
+- Aucun `.exe` reconstruit.
+

@@ -7,7 +7,7 @@ Le moteur prend en compte :
 - l'identite tactique complete (style, formation, pressing, tempo, mentalite,
   hauteur de bloc, largeur, axe de jeu, discipline) ;
 - la dynamique du match : momentum, fatigue qui monte, score et temps restant,
-  inferiorite numerique (rouge = 2 minutes a 4), 6e faute -> 10 m ;
+  inferiorite numerique (rouge = 2 minutes a 4), 6e faute et suivantes -> 10 m ;
 - l'aleatoire maitrise : forme du jour, arbitre, erreur de gardien, but contre
   son camp, frappe deviee, occasion nette ou speculative.
 
@@ -105,6 +105,8 @@ def _team_state(side, profile, lineup, identity, reputation, is_home, rng):
         "players_on": 5,
         "red_ticks": 0,
         "fouls_half": 0,
+        "fouls": 0,
+        "ten_meter": 0,
         "goals": 0,
         "shots": 0,
         "on_target": 0,
@@ -316,8 +318,13 @@ def _simulate_match(home, away, rng):
         # --- fautes : discipline, pressing, mentalite ---
         foul_p = 0.130 * (1.30 - defender["discipline"]) * (1.28 if defender["pressing"] == "Haut" else 1.0)
         foul_p *= MENTALITY.get(defender["mentality"], MENTALITY["Équilibrée"])["risk"]
+        # A partir de la 5e faute de la mi-temps, on defend plus prudemment :
+        # les equipes evitent la 6e faute et le 10 m.
+        if defender["fouls_half"] >= 5:
+            foul_p *= 0.65
         if rng.random() < foul_p:
             defender["fouls_half"] += 1
+            defender["fouls"] += 1
             pool = [p for p in defender["players"] if str(p.get("position")) != "Gardien"] or defender["players"]
             roll = rng.random()
             yellow_p = 0.28 * referee * (1.20 - defender["discipline"] * 0.40)
@@ -331,17 +338,25 @@ def _simulate_match(home, away, rng):
                 player = _pick(pool, [max(1.0, _num(p, "defense", 45)) for p in pool], rng)
                 defender["cards"].append({"player": player, "type": "yellow", "minute": minute, "side": defend_side})
             if defender["fouls_half"] >= 6:
-                defender["fouls_half"] = 0
+                # Regle futsal : a partir de la 6e faute accumulee dans la
+                # mi-temps, chaque faute supplementaire donne un 10 m.
+                defender["ten_meter"] += 1
                 atk = _attack_score(attacker, defender, minute)
                 dfn = _defense_score(defender, attacker, minute)
                 kicker = _shooter(attacker, rng)
                 conv = _clamp(0.27 + (_num(kicker, "finishing", 45) - defender["keeper"]) * 0.0022
                               + (atk - dfn) * 0.0010, 0.12, 0.46)
+                attacker["shots"] += 1
                 if rng.random() < conv:
+                    attacker["on_target"] += 1
                     add_goal(attack_side, minute, "10 m", scorer=kicker)
-                    side = defend_side
-                    attacker["build"] = 0
-                    continue
+                else:
+                    if rng.random() < 0.55 and _keeper_of(defender) is not None:
+                        attacker["on_target"] += 1
+                        defender["saves"] += 1
+                attacker["build"] = 0
+                side = defend_side
+                continue
             attacker["build"] = max(1, attacker["build"])
             continue
 

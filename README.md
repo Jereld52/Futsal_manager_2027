@@ -76,7 +76,7 @@ bouton de sauvegarde crée un point de reprise compacté.
 ## Tests
 
 ```text
-python tests\run_tests.py            # suite complète (89 suites)
+python tests\run_tests.py            # suite complète (98 suites)
 python tests\run_tests.py finances   # sous-ensemble par nom
 python tests\global_smoke.py fresh   # parcours complet, univers neuf
 python tests\global_smoke.py save    # idem sur une copie de sauvegarde

@@ -42486,9 +42486,15 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         chance=rng.random()
 
-        foul_threshold=shot_probability+.12
+        foul_window=.12
 
-        if side == manager_side: foul_threshold=shot_probability + .12*self._individual_effect(side,"foul")
+        # Comme dans le moteur simule : pres de la 6e faute de la mi-temps,
+        # on defend plus prudemment pour eviter le 10 m.
+        if int(s["fouls_half"].get(side,0) or 0) >= 5: foul_window*=.65
+
+        foul_threshold=shot_probability+foul_window
+
+        if side == manager_side: foul_threshold=shot_probability + foul_window*self._individual_effect(side,"foul")
 
         timeout_threshold=foul_threshold+.02
 
@@ -42691,9 +42697,11 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                 other = "a" if side == "h" else "h"
 
+                foul_number = int(s["fouls_half"][side])
+
                 self.match_banner.animate_action(other,"shot")
 
-                self.log_match_event(f"{stamp} — 6e faute cumulée : coup franc direct à 10m sans mur pour {s['home'] if other=='h' else s['away']}.","ten_metre",minute)
+                self.log_match_event(f"{stamp} — {foul_number}e faute cumulée : coup franc direct à 10m sans mur pour {s['home'] if other=='h' else s['away']}.","ten_metre",minute)
 
                 kick_profile=manager_profile if other==manager_side else opponent_profile
 
