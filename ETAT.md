@@ -10083,3 +10083,64 @@ désormais explicitement.
 - Aucun `.exe` reconstruit, aucune sauvegarde utilisateur modifiée.
 
 
+
+## Annexe HR - Phases de construction, tactiques réelles et attributs en 2D (15/11/2026)
+
+### 1) PHASES DE CONSTRUCTION
+Le terrain lit désormais une vraie phase de jeu, mise à jour à chaque frame :
+- **CONSTRUCTION BASSE** : ballon dans le premier tiers, défenseurs bas et larges ;
+- **CONSTRUCTION** : première relance / progression médiane ;
+- **PROGRESSION** : ballon dans la moitié adverse sans être dans la surface ;
+- **DERNIER TIERS** : appels plus agressifs des attaquants vers la surface ;
+- **TRANSITION** : récupération ou style contre, course vers l'avant ;
+- **PHASE ARRÊTÉE** : corner, faute, temps mort ;
+- **BLOC DÉFENSIF** : équipe sans possession.
+La phase est affichée dans un badge sobre en haut à gauche du terrain.
+
+### 2) LECTURE RÉELLE DES TACTIQUES
+- **Système / formation** : 2-2, 3-1, 4-0, 1-2-1, 1-1-2 (et gardien volant replié
+  sur une base 4-0) → les slots de base changent réellement.
+- **Largeur** : Large écarte les lignes, Étroite resserre le bloc.
+- **Axe de jeu** : Ailes écarte les joueurs de couloir, Axe les rapproche.
+- **Pressing / bloc** : la hauteur du bloc et le nombre de presseurs changent.
+- **Mentalité** : offensive pousse, prudente se protège.
+- **Tempo** : Rapide accélère la circulation et avance le bloc, Patient temporise.
+- **Preset** : possession, pressing, contre, powerplay, équilibré.
+- Les consignes de coach en cours de match mettent à jour `tactics_2d` pour que
+  le terrain réagisse immédiatement aux changements.
+
+### 3) ATTRIBUTS DES JOUEURS DANS LE 2D
+- **Vitesse** : facteur de course réel (0,74 à 1,20 ×).
+- **Accélération** : lissage de la vitesse et des changements de direction.
+- **Passe / technique / placement** : pondèrent le choix du receveur.
+- **Dribble / finition** : orientent la progression et les appels en dernier tiers.
+- **Endurance / condition** : réduisent la vitesse de course.
+- **Traits cachés** : activité, agressivité et professionnalisme influencent
+  pressing, fautes et fatigue visuelle.
+- Le porteur progresse vers la cage, le gardien glisse, les pions s'écartent.
+
+### 4) CIRCULATION VISUELLE PILOTÉE
+- Toutes les 1,8 à 4,8 s selon le tempo/pressing, une passe visuelle est jouée.
+- Le choix du receveur dépend de la phase, du style et des attributs :
+  - construction basse : défenseurs et joueurs sûrs à la passe ;
+  - progression : passe/placement ;
+  - transition / dernier tiers : vitesse et projection vers l'avant ;
+  - possession : conservation et technique.
+- Aucun impact sur le score, les statistiques ou le texte : le moteur reste
+  l'unique autorité.
+
+### 5) TESTS
+Nouveau `tests/test_pitch_tactics.py` :
+1. formation réellement appliquée (2-2 → 4-0) ;
+2. largeur Large vs Étroite change les cibles latérales ;
+3. phases build_low / build_mid / final_third / transition / set_piece ;
+4. vitesse 20 vs 95 : déplacement réellement plus grand ;
+5. circulation avec receveur cohérent en dernier tiers ;
+6. `note_state` ne mute jamais l'état du moteur.
+- Suite complète : **100 suites PASS, 0 FAIL**, `RESULT : ALL OK`.
+- Capture : `apercu_match_2d.png` avec badge de phase.
+
+### 6) VALIDATION
+- `data/error.log` : **0 octet**.
+- Aucune sauvegarde utilisateur modifiée, aucun `.exe` reconstruit.
+

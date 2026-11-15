@@ -40191,7 +40191,19 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                      "mentality": int(self.mentality.currentIndex()) if hasattr(self,"mentality") else 0,
 
-                     "preset": str(getattr(self,"active_tactic_preset","equilibre"))}
+                     "preset": str(getattr(self,"active_tactic_preset","equilibre")),
+
+                     "formation": str(self.formation.currentText()).split("—")[0].strip() if hasattr(self,"formation") else "2-2",
+
+                     "style": str(getattr(self,"active_tactic_preset","equilibre")),
+
+                     "block": str(self.block_height.currentText()) if hasattr(self,"block_height") else "Médian",
+
+                     "width": str(self.attack_width.currentText()) if hasattr(self,"attack_width") else "Normale",
+
+                     "focus": str(self.attack_focus.currentText()) if hasattr(self,"attack_focus") else "Axe",
+
+                     "tempo": str(self.tempo.currentText()) if hasattr(self,"tempo") else "Normal"}
 
         except Exception:
 
@@ -40209,7 +40221,19 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         self.match_state["tactics_2d"]={"h":_user_t,
 
-                                        "a":{"pressing":_opp_press,"mentality":0,"preset":_opp_style}}
+                                        "a":{"pressing":_opp_press,"mentality":0,"preset":_opp_style,
+
+                                             "formation":str((opponent_tactics or {}).get("formation","3-1")),
+
+                                             "style":_opp_style,
+
+                                             "block":str((opponent_tactics or {}).get("block","Médian")),
+
+                                             "width":str((opponent_tactics or {}).get("width","Normale")),
+
+                                             "focus":str((opponent_tactics or {}).get("focus","Axe")),
+
+                                             "tempo":str((opponent_tactics or {}).get("tempo","Normal"))}}
 
         self.event_log.clear()
 
@@ -41008,6 +41032,20 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         for control,value in values.items(): getattr(self,control).setCurrentText(value)
 
         self._applying_tactic_preset=previous_flag
+
+        try:
+            _t=state.setdefault("tactics_2d",{}).setdefault("h",{})
+            _t.update({"pressing":int(self.press_intensity.currentIndex()),
+                       "mentality":int(self.mentality.currentIndex()),
+                       "preset":str(getattr(self,"active_tactic_preset","equilibre") or "equilibre"),
+                       "formation":str(self.formation.currentText()).split("—")[0].strip(),
+                       "style":str(getattr(self,"active_tactic_preset","equilibre") or "equilibre"),
+                       "block":str(self.block_height.currentText()),
+                       "width":str(self.attack_width.currentText()),
+                       "focus":str(self.attack_focus.currentText()),
+                       "tempo":str(self.tempo.currentText())})
+        except Exception:
+            pass
 
         state["coach_instruction"]=name; state["coach_instruction_remaining"]=5
 

@@ -27,6 +27,7 @@ from PySide6.QtGui import (QColor, QFont, QPainter, QPen, QBrush, QFontMetrics,
 from PySide6.QtWidgets import QWidget, QSizePolicy, QPushButton, QButtonGroup, QToolButton
 
 from ui_components import MatchActionBanner
+from game_utils import hidden_attributes_for
 
 
 def display_team_colors(home_color, away_color):
@@ -51,6 +52,16 @@ def display_team_colors(home_color, away_color):
 SLOTS_H = [(0.055, 0.50),                 # gardien
            (0.27, 0.24), (0.27, 0.76),    # deux defenseurs (ecart elargi)
            (0.52, 0.30), (0.52, 0.70)]    # deux attaquants (couloirs larges)
+
+# Formes de base supplémentaires : le 2D lit le système choisi, pas seulement
+# un 2-2 générique. Les slots sont exprimés pour l'équipe qui attaque à droite.
+FORMATION_SLOTS = {
+    "2-2": SLOTS_H,
+    "3-1": [(0.055, 0.50), (0.24, 0.18), (0.24, 0.50), (0.24, 0.82), (0.54, 0.50)],
+    "4-0": [(0.055, 0.50), (0.28, 0.14), (0.28, 0.38), (0.28, 0.62), (0.28, 0.86)],
+    "1-2-1": [(0.055, 0.50), (0.24, 0.50), (0.47, 0.26), (0.47, 0.74), (0.72, 0.50)],
+    "1-1-2": [(0.055, 0.50), (0.24, 0.50), (0.47, 0.50), (0.70, 0.33), (0.70, 0.67)],
+}
 MARKER_MS = 1600      # duree d'affichage du dernier libelle d'action
 FLASH_MS = 2200       # duree du flash "BUT"
 FPS_MS = 16           # ~60 fps : mouvement beaucoup plus fluide
@@ -166,6 +177,9 @@ class Pitch2DWidget(QWidget):
         self._carrier_hold = {"h": None, "a": None}
         self._visual_next = 0.0
         self._visual_rng = random.Random(2027)
+        self._build_phase = "build_mid"
+        self._build_phase_side = None
+        self._set_piece_until = 0.0
         self._action_actor = None
         self._action_until = 0.0
 
@@ -232,6 +246,8 @@ class Pitch2DWidget(QWidget):
             self._carrier_hold = {"h": None, "a": None}
             self._visual_next = 0.0
             self._visual_rng = random.Random(2027)
+            self._build_phase = "build_mid"; self._build_phase_side = None
+            self._set_piece_until = 0.0
             self._action_actor = None; self._action_until = 0.0
         except Exception:
             pass
@@ -373,6 +389,7 @@ class Pitch2DWidget(QWidget):
                 self._ball["target"] = (1.0 if attacking_corner else 0.0, y)
                 self._kick_ball(self._ball["target"], BALL_KICK_SPEED * 0.55)
                 self._ball_lock_until = now + 0.9 * self._pace_k
+                self._set_piece_until = now + 1.2 * self._pace_k
                 taker = None
                 try:
                     cands=[e for e in (self._teams.get(side) or [])
@@ -419,6 +436,7 @@ class Pitch2DWidget(QWidget):
                     self._action_actor = (side, culprit)
                     self._action_until = now + 0.9 * self._pace_k
                 self._ball_lock_until = now + 0.8 * self._pace_k
+                self._set_piece_until = now + 0.9 * self._pace_k
                 self._wake()
             else:  # carton, 10 m, temps mort, consigne, remplacement…
                 if detail:
@@ -428,6 +446,7 @@ class Pitch2DWidget(QWidget):
                         self._action_until = now + 1.0 * self._pace_k
                 if kind in ("yellow_card", "red", "timeout", "substitution", "ten_metre"):
                     self._ball_lock_until = now + 0.8 * self._pace_k
+                self._set_piece_until = now + 0.9 * self._pace_k
                 self._wake()
         except Exception:
             pass
@@ -468,6 +487,45 @@ class Pitch2DWidget(QWidget):
         attacks_right_h = (side == "h")
         return attacks_right_h if not self._second_half else (side == "a")
 
+    def _formation_slots(self, side):
+        """Slots du système tactique choisi, avec repli sur le 2-2 historique."""
+        try:
+            tac = self._tactics.get(side) or {}
+            raw = str(tac.get("formation") or "2-2").replace("—", "-").strip()
+            key = raw.split(" ")[0].strip()
+            if key.startswith("Gardien"):
+                key = "4-0"
+            return FORMATION_SLOTS.get(key, SLOTS_H)
+        except Exception:
+            return SLOTS_H
+
+    def _read_build_phase(self, side):
+        """Phase de construction lue sur le ballon, la tactique et le tempo."""
+        if side not in ("h", "a"):
+            return "defend"
+        now = time.monotonic()
+        if now < self._set_piece_until:
+            return "set_piece"
+        if self._burst and self._burst[0] == side and self._burst[1] > now:
+            return "transition"
+        try:
+            bx, _by = self._ball["pos"]
+            attacking_right = self._side_attacks_right(side)
+            progress = bx if attacking_right else 1.0 - bx
+            tac = self._tactics.get(side) or {}
+            style = str(tac.get("preset") or tac.get("style") or "equilibre")
+            if style == "contre" and progress > 0.52:
+                return "transition"
+            if progress < 0.30:
+                return "build_low"
+            if progress < 0.55:
+                return "build_mid"
+            if progress < 0.78:
+                return "progress"
+            return "final_third"
+        except Exception:
+            return "build_mid"
+
     def _score_goal(self, side, _elapsed):
         now = time.monotonic()
         self._goal_flash = (side, now + FLASH_MS / 1000.0 * self._pace_k)
@@ -494,11 +552,12 @@ class Pitch2DWidget(QWidget):
             ordered = self._lineup_slots(players)
             conds = state.get("conditions" if key == "lineup" else "opponent_conditions", {}) or {}
             team = self._teams[side]
+            slots = self._formation_slots(side)
             for i, player in enumerate(ordered):
                 # Placement : 1RE = h a gauche / a a droite. En 2E les deux
                 # equipes PIVOTENT (h a droite, a a gauche) : changement de
                 # cotes fidele a la mi-temps (retour utilisateur).
-                base = _mirror(SLOTS_H[i]) if self._second_half else SLOTS_H[i]
+                base = _mirror(slots[i]) if self._second_half else slots[i]
                 slot = base if side == "h" else _mirror(base)
                 ent = team[i]
                 if player is None:
@@ -510,8 +569,24 @@ class Pitch2DWidget(QWidget):
                 ent["name"] = f"{player.get('first_name','')} {player.get('last_name','')}"
                 ent["number"] = int(player.get("shirt_number") or 0)
                 ent["gk"] = (i == 0)
+                ent["role"] = str(player.get("position") or "Universel")
                 ent["shown"] = True
                 ent["alpha"] = 0.55 + 0.45 * max(0.0, min(1.0, condition / 100.0))
+                # Attributs réels du joueur pour le moteur visuel : vitesse,
+                # passe, dribble, placement et traits cachés.
+                def _av(attr, default=50.0):
+                    try: return float(player.get(attr, default) or default)
+                    except Exception: return float(default)
+                ent["attrs"] = {
+                    "speed": _av("speed"), "stamina": _av("stamina"),
+                    "passing": _av("passing"), "technique": _av("technique"),
+                    "dribble": _av("dribble"), "positioning": _av("positioning"),
+                    "finishing": _av("finishing"), "defense": _av("defense"),
+                    "condition": condition,
+                }
+                ent["traits"] = hidden_attributes_for(player)
+                ent["speed_factor"] = (0.74 + _av("speed") / 100.0 * 0.46) * (0.86 + condition / 100.0 * 0.14)
+                ent["accel_factor"] = 0.78 + _av("speed") / 100.0 * 0.44
                 if swap:
                     # changement de joueur dans le slot : reprise nette depuis
                     # une position legerement decalee (pas de glissade fantome)
@@ -540,14 +615,27 @@ class Pitch2DWidget(QWidget):
         preset_gain = {"possession":0.100,"powerplay":0.110,"equilibre":0.065,
                        "pressing":0.085,"contre":0.040}.get(preset,0.065)
         mentality_f = (0.66,1.0,1.28)[mentality if 0<=mentality<=2 else 1]
+        # Largeur / axe de jeu / rythme : lus dans la tactique du jour.
+        width = str(tac.get("width","Normale"))
+        focus = str(tac.get("focus","Axe"))
+        tempo = str(tac.get("tempo","Normal"))
+        width_f = 1.22 if width=="Large" else (0.84 if width=="Étroite" else 1.0)
+        focus_f = 1.16 if focus=="Ailes" else (0.86 if focus=="Axe" else 1.0)
+        tempo_shift = 0.018 if tempo=="Rapide" else (-0.010 if tempo=="Patient" else 0.0)
         # sans ballon le bloc reste haut si pressing Haut, s'assoit si Bas
         deep_gain = preset_gain + (0.040 if press==2 else -0.020 if press==0 else 0.0)
         shift_x = deep_gain * mentality_f * push if i >= 3 else deep_gain*0.55 * mentality_f * push
+        shift_x += tempo_shift * (1.0 if push else 0.55)
         block_seed = (press-1)*0.030 + (mentality-1)*0.035*push
         base_x = slot[0] + block_seed*(1.0 if side=="h" else -1.0)
         shift_x = shift_x if side=="h" else -shift_x
-        sway = ((i % 2) * 0.065) * (1 if self._possession == side else -1)
-        tx, ty = _clamp01(base_x + shift_x), _clamp01(slot[1] + sway)
+        sway = ((i % 2) * 0.065) * (1 if self._possession == side else -1) * width_f * focus_f
+        # Milieux/ailiers étirés en largeur, intérieurs resserrés en jeu axial.
+        if i in (1,2):
+            ty_center = 0.5 + (slot[1]-0.5) * width_f * focus_f
+        else:
+            ty_center = slot[1]
+        tx, ty = _clamp01(base_x + shift_x), _clamp01(ty_center + sway)
         ent["target"] = [_clamp01(tx), _clamp01(ty)]
 
     def _aim_carrier(self, side, advance=False, target_ent=None):
@@ -563,8 +651,9 @@ class Pitch2DWidget(QWidget):
                                 _clamp01(holder["pos"][1] + 0.02))
 
     def _visual_circulate(self, side, now):
-        """Petite circulation de balle purement visuelle entre deux actions du
-        moteur : le match reste vivant pendant les 20 s réelles d'un tick."""
+        """Circulation de balle purement visuelle, pilotée par la tactique et
+        les attributs : construction basse, progression, dernier tiers,
+        transition. Aucun impact sur le score ou les statistiques."""
         try:
             team=[e for e in (self._teams.get(side) or []) if e.get("shown") and not e.get("gk")]
             if len(team)<2:
@@ -574,18 +663,47 @@ class Pitch2DWidget(QWidget):
             if not cands:
                 return
             attack_right=self._side_attacks_right(side)
-            # préfère un joueur légèrement en avant pour donner une impression de construction
-            cands.sort(key=lambda e: (e["pos"][0] if attack_right else -e["pos"][0]))
-            receiver=self._visual_rng.choice(cands[:max(1,min(3,len(cands)))])
-            lead=0.045 if attack_right else -0.045
+            phase=self._build_phase
+            tac=self._tactics.get(side) or {}
+            style=str(tac.get("preset") or tac.get("style") or "equilibre")
+            tempo=str(tac.get("tempo") or "Normal")
+            def score(e):
+                a=e.get("attrs") or {}
+                forward=e["pos"][0] if attack_right else 1.0-e["pos"][0]
+                passing=float(a.get("passing",50)); posn=float(a.get("positioning",50))
+                speed=float(a.get("speed",50)); technique=float(a.get("technique",50))
+                role=str(e.get("role") or "")
+                value=passing*0.26+posn*0.22+technique*0.14
+                if phase=="build_low":
+                    value += (1.0-forward)*28.0 + (12.0 if role=="Défenseur" else 0.0) + passing*0.18
+                elif phase=="build_mid":
+                    value += forward*18.0 + passing*0.24 + posn*0.16
+                elif phase=="transition":
+                    value += forward*42.0 + speed*0.34
+                elif phase=="final_third":
+                    value += forward*34.0 + float(a.get("finishing",50))*0.18
+                else:
+                    value += forward*26.0 + speed*0.16
+                if style in ("possession","possession"):
+                    value += passing*0.22 + posn*0.10
+                elif style in ("contre","pressing"):
+                    value += speed*0.20 + forward*12.0
+                if tempo=="Rapide":
+                    value += speed*0.12
+                return max(1.0,value)
+            weights=[score(e) for e in cands]
+            receiver=self._visual_rng.choices(cands,weights=weights,k=1)[0]
+            lead=(0.075 if phase in ("transition","final_third") else 0.045)
+            lead=lead if attack_right else -lead
             target=[_clamp01(receiver["pos"][0]+lead), _clamp01(receiver["pos"][1]+0.02)]
             self._follow_ent=receiver; self._follow_side=side
             self._follow_until=now+1.5
             self._carrier_hold[side]=receiver
             self._ball_lock_until=0.0
             self._ball["target"]=target
-            self._kick_ball(target, BALL_DRIBBLE_SPEED * 1.20)
-            self._visual_next=now+self._visual_rng.uniform(2.4,4.8)
+            self._kick_ball(target, BALL_DRIBBLE_SPEED * (1.35 if phase in ("transition","final_third") else 1.05))
+            delay=(1.8,3.4) if tempo=="Rapide" or style=="pressing" else (2.4,4.8)
+            self._visual_next=now+self._visual_rng.uniform(*delay)
         except Exception:
             pass
 
@@ -645,6 +763,8 @@ class Pitch2DWidget(QWidget):
         ball = self._ball
         # --- ballon : conduite sur le porteur, ou trajectoire verrouillee (tir/but/passe)
         locked = now < self._ball_lock_until
+        self._build_phase_side = self._possession
+        self._build_phase = self._read_build_phase(self._possession)
         if (self._phase == "live" and not locked and self._possession in ("h", "a")
                 and now >= self._visual_next and now >= self._follow_until):
             self._visual_circulate(self._possession, now)
@@ -751,6 +871,15 @@ class Pitch2DWidget(QWidget):
                 else:
                     phase = i * 1.73 + (0.0 if side == "h" else 0.9)
                     gx, gy = base[0], base[1]
+                    _phase = self._build_phase
+                    _attack_dir = 1.0 if self._side_attacks_right(side) else -1.0
+                    if has_poss and _phase == "build_low" and i <= 2:
+                        # construction basse : les défenseurs restent bas et larges
+                        gx = _clamp01(gx - _attack_dir * 0.028)
+                        gy = _clamp01(gy + (0.035 if i == 1 else -0.035))
+                    elif has_poss and _phase == "final_third" and i >= 3:
+                        # dernier tiers : appels plus agressifs vers la surface
+                        gx = _clamp01(gx + _attack_dir * 0.050)
                     if has_poss and i >= 3:
                         # ATTAQUE : appels en largeur amples + course de soutien
                         # vers la profondeur du ballon (les attaquants
@@ -823,10 +952,10 @@ class Pitch2DWidget(QWidget):
                 # VITESSE DE COURSE : plafond de base + burst de transition
                 # (presseurs et attaquants en possession) ; le preset
                 # "contre" sprinte encore plus fort sur la reprise de balle.
-                mstep = PLAYER_SPEED * speed_scale
+                mstep = PLAYER_SPEED * speed_scale * float(ent.get("speed_factor",1.0) or 1.0)
                 if burst and (ent in pressers or (has_poss and i >= 3)):
                     _tac = self._tactics.get(side) or {}
-                    mstep = PLAYER_SPEED * speed_scale * (1.65 if _tac.get("preset") == "contre" else 1.5)
+                    mstep = PLAYER_SPEED * speed_scale * float(ent.get("speed_factor",1.0) or 1.0) * (1.65 if _tac.get("preset") == "contre" else 1.5)
                 # Steering : accélération et freinage lissés (plus de saut de
                 # direction, la course décrit une courbe naturelle).
                 if dist_run > 0.0015:
@@ -834,7 +963,7 @@ class Pitch2DWidget(QWidget):
                     tvx, tvy = ddx / dist_run * want, ddy / dist_run * want
                 else:
                     tvx = tvy = 0.0
-                paccel = 1.0 - math.exp(-PLAYER_ACCEL_RATE * dt)
+                paccel = 1.0 - math.exp(-PLAYER_ACCEL_RATE * float(ent.get("accel_factor",1.0) or 1.0) * dt)
                 vx += (tvx - vx) * paccel
                 vy += (tvy - vy) * paccel
                 if abs(vx) < 1e-4:
@@ -911,6 +1040,7 @@ class Pitch2DWidget(QWidget):
             self._paint_players(painter, court)
             self._paint_ball(painter, court)
             self._paint_action_chip(painter, court)
+            self._paint_phase_badge(painter, court)
             self._paint_overlays(painter, court)
             painter.end()
         except Exception as exc:
@@ -1132,6 +1262,29 @@ class Pitch2DWidget(QWidget):
             painter.drawText(QRectF(box.left() + pad * 2, box.top() + pad * 0.7 + label_px + 1,
                                     box.width() - pad * 3, detail_px + 4),
                              Qt.AlignHCenter | Qt.AlignVCenter, detail)
+
+    def _paint_phase_badge(self, painter, rect):
+        """Badge de phase de construction : le 2D montre ce que lit le moteur."""
+        if self._phase != "live":
+            return
+        phase = self._build_phase or "build_mid"
+        labels = {"build_low":"CONSTRUCTION BASSE", "build_mid":"CONSTRUCTION",
+                  "progress":"PROGRESSION", "final_third":"DERNIER TIERS",
+                  "transition":"TRANSITION", "set_piece":"PHASE ARRÊTÉE",
+                  "defend":"BLOC DÉFENSIF"}
+        label = labels.get(phase, "CONSTRUCTION")
+        side = self._build_phase_side if self._build_phase_side in ("h","a") else "h"
+        color = QColor(self._colors[side])
+        painter.save()
+        f = QFont(self.font()); f.setPixelSize(max(7, int(rect.height()*0.030))); f.setBold(True)
+        painter.setFont(f)
+        fm = painter.fontMetrics(); tw = fm.horizontalAdvance(label)
+        box = QRectF(rect.left()+8, rect.top()+8, tw+18, fm.height()+8)
+        painter.setPen(QPen(QColor(255,255,255,42),1.0))
+        bg = QColor("#0b1420"); bg.setAlpha(190); painter.setBrush(QBrush(bg))
+        painter.drawRoundedRect(box,5,5)
+        painter.setPen(QPen(color)); painter.drawText(box.adjusted(9,0,-5,0), Qt.AlignVCenter|Qt.AlignLeft, label)
+        painter.restore()
 
     def _paint_overlays(self, painter, rect):
         now = time.monotonic()

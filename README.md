@@ -81,6 +81,13 @@ bouton de sauvegarde crée un point de reprise compacté.
   tactique, courses de soutien, gardien qui suit le ballon, écartement des pions.
 - Le terrain suit réellement le texte : passeur → receveur, tireur, gardien qui
   arrête, fautif, corner, buteur et célébration.
+- **Phases de construction** lisibles : construction basse, construction,
+  progression, dernier tiers, transition, phase arrêtée, bloc défensif.
+- Les **systèmes** (2-2, 3-1, 4-0, 1-2-1, 1-1-2), la largeur, l'axe de jeu, le
+  bloc, le pressing, le tempo et la mentalité modifient réellement les placements
+  et la circulation du ballon.
+- Les **attributs des joueurs** comptent dans le 2D : vitesse, accélération,
+  passe, dribble, placement et traits cachés influencent courses et choix de passe.
 - **1× = temps réel strict** (20 s réelles par tranche de 20 s simulées, match
   complet en ~40 min) ; 2× à 5× accélèrent sans casser les mouvements.
 - Horloge **fluide** entre les ticks du moteur ; les évènements et le score
@@ -106,7 +113,7 @@ bouton de sauvegarde crée un point de reprise compacté.
 ## Tests
 
 ```text
-python tests\run_tests.py            # suite complète (99 suites)
+python tests\run_tests.py            # suite complète (100 suites)
 python tests\run_tests.py finances   # sous-ensemble par nom
 python tests\global_smoke.py fresh   # parcours complet, univers neuf
 python tests\global_smoke.py save    # idem sur une copie de sauvegarde
