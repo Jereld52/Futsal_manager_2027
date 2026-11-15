@@ -62,8 +62,11 @@ try:
     assert w.arena_sound.enabled is False
     c = app.db()
     rec = c.execute("SELECT COUNT(*) n FROM match_record WHERE season>0").fetchone()["n"]
+    detail = c.execute("SELECT shots, passes_attempted, tackles, fouls, minutes FROM player_match_log WHERE played=1 ORDER BY id DESC LIMIT 5").fetchall()
     c.close()
     assert rec >= 1, rec
+    assert detail and any(int(r["passes_attempted"] or 0) > 0 for r in detail), [dict(r) for r in detail]
+    assert any(int(r["minutes"] or 0) > 0 for r in detail), [dict(r) for r in detail]
     w.close(); q.processEvents()
 finally:
     app.QDialog.exec = old_exec

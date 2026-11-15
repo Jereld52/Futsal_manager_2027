@@ -62,6 +62,11 @@ texts = [lbl.text() for lbl in CAPTURED[-1].findChildren(QLabel)]
 joined = "\n".join(texts)
 assert f"PRÊTÉ À {borrower['name']}" in joined, [t for t in texts if "PRÊT" in t][:4]
 assert "NIVEAU" in joined and "≈" not in joined, [t for t in texts if "NIVEAU" in t][:3]
+niveau_txt=[t for t in texts if "NIVEAU" in t]
+assert any("★" in t for t in niveau_txt), niveau_txt
+assert not any("/20" in t for t in niveau_txt), niveau_txt
+assert any("MENTAL CACHÉ" in t for t in texts), [t for t in texts if "MENTAL" in t][:2]
+assert any("STATISTIQUES DÉTAILLÉES" in t for t in texts), [t for t in texts if "STATISTIQUES" in t][:2]
 assert "TECHNIQUE" in joined and "DÉFENSIF" in joined, [t for t in texts if "TECHNIQUE" in t][:2]
 print("2) prêt sortant :", [t for t in texts if "PRÊTÉ" in t][0])
 

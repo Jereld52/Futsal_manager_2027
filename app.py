@@ -4,7 +4,10 @@ from pathlib import Path
 
 from datetime import datetime, timedelta, date
 
-from game_utils import (parse_iso, fmt_date_fr, fmt_datetime_fr, fmt_match_time, iso_today, rating20, stars5, round_money, format_euros)
+from game_utils import (parse_iso, fmt_date_fr, fmt_datetime_fr, fmt_match_time, iso_today, rating20, stars5,
+                        stars_half, star_value, stars_compact, star_range_text, round_half,
+                        hidden_attributes_for, hidden_trait_tier, hidden_trait_index, hidden_trait_text,
+                        HIDDEN_TRAIT_KEYS, HIDDEN_TRAIT_LABELS, round_money, format_euros)
 from immersion import ArenaSound, commentary_line, SOUND_FOR_CATEGORY
 from support import create_bug_report
 
@@ -1708,6 +1711,13 @@ def ensure_schema(conn):
 
         conn.execute("ALTER TABLE player ADD COLUMN season_rating_count INTEGER NOT NULL DEFAULT 0")
 
+    # Totaux détaillés de la saison (alimentés par les matchs live et IA).
+    for column in ("season_shots", "season_shots_on_target", "season_passes_completed",
+                   "season_passes_attempted", "season_tackles", "season_interceptions",
+                   "season_fouls", "season_minutes", "season_clean_sheets"):
+        if not column_exists(conn, "player", column):
+            conn.execute(f"ALTER TABLE player ADD COLUMN {column} INTEGER NOT NULL DEFAULT 0")
+
     # Notes propres au futsal : dribble serré / explosivité / placement-rotations.
 
     # Backfill au moment de l'ajout : les sauvegardes existantes déduisent les notes de leurs attributs.
@@ -2478,6 +2488,21 @@ def ensure_management_tables(conn):
 
         conn.execute("UPDATE scout_report SET accuracy=0.75 WHERE knowledge>=100")
 
+    # Statistiques détaillées par match (joueurs) : tirs, passes, duels, minutes.
+    for column, ddl in (
+        ("shots", "INTEGER NOT NULL DEFAULT 0"),
+        ("shots_on_target", "INTEGER NOT NULL DEFAULT 0"),
+        ("passes_completed", "INTEGER NOT NULL DEFAULT 0"),
+        ("passes_attempted", "INTEGER NOT NULL DEFAULT 0"),
+        ("tackles", "INTEGER NOT NULL DEFAULT 0"),
+        ("interceptions", "INTEGER NOT NULL DEFAULT 0"),
+        ("fouls", "INTEGER NOT NULL DEFAULT 0"),
+        ("minutes", "INTEGER NOT NULL DEFAULT 0"),
+        ("conceded", "INTEGER NOT NULL DEFAULT 0"),
+    ):
+        if not column_exists(conn, "player_match_log", column):
+            conn.execute(f"ALTER TABLE player_match_log ADD COLUMN {column} {ddl}")
+
     conn.executemany("INSERT OR IGNORE INTO league(id,name,strength,base_budget) VALUES(?,?,?,?)",[(i,name,strength,budget) for i,name,strength,budget,_ in LEAGUE_DEFINITIONS])
 
 
@@ -3216,6 +3241,91 @@ def scout_accuracy_for(player_id,reports,scout_level,effort="standard"):
     value=0.52+0.04*int(scout_level or 0)+effort_meta["acc_bonus"]+rng.uniform(-0.06,0.10)
 
     return round(float(max(0.35,min(0.95,value))),2)
+
+
+def scout_star_band(p,knowledge,accuracy=0.60,kind="level",scout_level=0,reports=0):
+    """Estimation en étoiles du niveau ou du potentiel, avec erreur de scout.
+
+    Le recruteur peut se tromper : biais stable par joueur et par recruteur,
+    amplitude qui dépend de la connaissance, de la fiabilité et du niveau du
+    recruteur. Le potentiel reste le secret le plus difficile à percer.
+    """
+    knowledge=int(knowledge or 0); accuracy=float(accuracy or 0.60)
+    if kind=="potential" and knowledge<50: return None
+    if kind!="potential" and knowledge<25: return None
+    try:
+        note=float(player_potential_from_row(p) if kind=="potential" else player_level_from_row(p))
+    except Exception:
+        note=8.0
+    true_stars=star_value(note)
+    level=int(scout_level or 0)
+    spread=(0.5+(1.0-accuracy)*2.4+(1.0-min(100,knowledge)/100.0)*1.3
+            +max(0,2-level)*0.25)
+    if kind=="potential": spread=spread*1.22+0.25
+    try:
+        pid=p["id"]
+    except Exception:
+        pid=""
+    rng=random.Random(f"scoutstar|{pid}|{kind}|{level}|{knowledge//10}|{int(reports or 0)//5}")
+    bias=rng.uniform(-1.0,1.0)*(1.0-accuracy)*(1.8 if kind=="potential" else 1.4)
+    mid=max(0.5,min(5.0,true_stars+bias))
+    exact=False
+    if kind=="potential":
+        exact=knowledge>=100 and accuracy>=0.80
+    else:
+        exact=knowledge>=95 and accuracy>=0.78
+    if exact:
+        return {"true":true_stars,"mid":true_stars,"low":true_stars,"high":true_stars,"exact":True,"spread":0.0}
+    low=max(0.5,round_half(mid-spread/2.0)); high=min(5.0,round_half(mid+spread/2.0))
+    if low==high:
+        low=max(0.5,low-0.5); high=min(5.0,high+0.5)
+    return {"true":true_stars,"mid":mid,"low":low,"high":high,"exact":False,
+            "spread":max(0.5,spread)}
+
+
+def scout_star_text(p,knowledge,accuracy=0.60,kind="level",scout_level=0,reports=0,compact=False):
+    """Texte étoilé : exact, fourchette, ou « à évaluer »."""
+    band=scout_star_band(p,knowledge,accuracy,kind,scout_level,reports)
+    if band is None:
+        if compact: return "?"
+        return "À évaluer" if kind=="level" else "Potentiel inconnu"
+    if band["exact"]: return stars_compact(band["mid"])
+    if compact: return stars_compact(band["mid"])+"±"
+    return star_range_text(band["low"],band["high"])
+
+
+def scout_hidden_text(p,key,knowledge,accuracy=0.60,scout_level=0,reports=0):
+    """Indice qualitatif sur un attribut caché ; peut être trompeur si le scout est faible."""
+    knowledge=int(knowledge or 0)
+    if knowledge<25: return "—"
+    traits=hidden_attributes_for(p)
+    true_index=hidden_trait_index(key,traits[key])
+    accuracy=float(accuracy or 0.60); level=int(scout_level or 0)
+    error=(1.0-accuracy)*1.6+(1.0-min(100,knowledge)/100.0)*0.8+max(0,2-level)*0.10
+    try:
+        pid=p["id"]
+    except Exception:
+        pid=""
+    rng=random.Random(f"hiddenscout|{pid}|{key}|{level}|{knowledge//10}|{int(reports or 0)//5}")
+    shift=0
+    if rng.random()<max(0.0,min(0.50,error*0.30)):
+        shift=1 if rng.random()<0.5 else -1
+    return hidden_trait_text(key,true_index+shift)
+
+
+def scout_confidence_line(knowledge,accuracy=0.60,scout_level=0,reports=0,is_own=False,kind="level",p=None):
+    """Sources d'erreur lisibles : observations, niveau du recruteur, fiabilité."""
+    if is_own: return "STAFF INTERNE  •  évaluation fiable"
+    knowledge=int(knowledge or 0)
+    if knowledge<=0: return "AUCUNE OBSERVATION  •  envoie les scouts pour évaluer ce joueur"
+    level=max(0,min(5,int(scout_level or 0)))
+    if p is not None:
+        band=scout_star_band(p,knowledge,accuracy,kind,level,reports)
+        error=(band["spread"]/2.0) if band and not band["exact"] else 0.0
+    else:
+        error=max(0.0,(1.0-float(accuracy))*2.0+(1.0-knowledge/100.0)*1.2)
+    return (f"{int(reports or 0)} rapport(s)  •  recruteur niv. {level}/5  •  "
+            f"fiabilité {int(round(float(accuracy)*100))} %  •  erreur possible ±{max(0.5,round_half(error)):.1f} ★")
 
 
 
@@ -5004,7 +5114,7 @@ def build_welcome_report(conn,club_name,division,budget):
 
         f"• {len(rows)} joueurs sous contrat — âge moyen {avg_age:.0f} ans (plus jeune : {youngest['first_name']} {youngest['last_name']}, {youngest['age']} ans • doyen : {oldest['first_name']} {oldest['last_name']}, {oldest['age']} ans).",
 
-        f"• Niveau moyen du groupe : {note(avg_level)}. Meilleur élément : {best['first_name']} {best['last_name']} ({best['position']}, {note(best_lv)}).",
+        f"• Niveau moyen du groupe : {stars_half(avg_level)}. Meilleur élément : {best['first_name']} {best['last_name']} ({best['position']}, {stars_half(best_lv)}).",
 
         "• Structure d'effectif : 2 gardiens, 2 défenseurs, 2 ailiers, 2 pivots et 2 joueurs universels — vous pouvez faire tourner sans casser l'équilibre.",
 
@@ -9574,7 +9684,7 @@ class AcademyTrialDialog(QDialog):
         col=QVBoxLayout(); col.setSpacing(1)
         name=QLabel(f"{p['first_name']} {p['last_name']}")
         name.setStyleSheet("font-size:9.5pt;font-weight:1000;color:#eef4fb;"); col.addWidget(name)
-        meta=QLabel(f"{p['position']} • {p['age']} ans • {p['nationality']} • Niv. {p['level']}/20 • Pot. {p['potential']}/20")
+        meta=QLabel(f"{p['position']} • {p['age']} ans • {p['nationality']} • Niv. {stars_half(p['level'])} • Pot. {stars_half(p['potential'])}")
         meta.setObjectName("Muted"); meta.setWordWrap(True); col.addWidget(meta)
         stats=QLabel(f"TEC {rating20(p['technique'])} • PAS {rating20(p['passing'])} • FIN {rating20(p['finishing'])} • DÉF {rating20(p['defense'])} • END {rating20(p['stamina'])}")
         stats.setStyleSheet("font-size:7pt;font-weight:800;color:#8de5b9;"); col.addWidget(stats)
@@ -14308,7 +14418,7 @@ class MainWindow(QMainWindow):
 
         evaluated=is_own or (self.scout_staff_hired and knowledge>=75)
 
-        shown_level=(f"{level:.0f}/20 {stars5(level)}" if evaluated else (scout_level_text(p,knowledge,acc) if knowledge>=25 else "Niveau à évaluer"))
+        shown_level=(f"Niv. {stars_half(level)}" if evaluated else f"Niv. {scout_star_text(p,knowledge,acc,'level',getattr(self,'scout_level',0),int(p['scout_reports'] or 0))}")
 
         lvl=QLabel(shown_level); lvl.setFixedWidth(150); lvl.setAlignment(Qt.AlignCenter)
 
@@ -15767,7 +15877,7 @@ class MainWindow(QMainWindow):
 
             pstats=f"  •  {_pgoals} {'but' if _pgoals==1 else 'buts'}" if str(player["position"])!="Gardien" else f"  •  {_psaves} {'arrêt' if _psaves==1 else 'arrêts'}"
 
-            shown_level=(f"{level}/20 {stars5(level)}" if evaluated else (scout_level_text(player,knowledge,club_acc) if knowledge>=25 else "Niveau à évaluer"))
+            shown_level=(f"Niv. {stars_half(level)}" if evaluated else f"Niv. {scout_star_text(player,knowledge,club_acc,'level',getattr(self,'scout_level',0),int(player['scout_reports'] or 0))}")
 
             pmeta=QLabel(f"{player['position']}  •  {player['age']} ans  •  {shown_level}"+pstats)
 
@@ -15785,9 +15895,9 @@ class MainWindow(QMainWindow):
             pmeta2.setObjectName("Muted"); pmeta2.setStyleSheet("font-size:7.5pt;color:#8494ac;")
             text.addWidget(pname); text.addWidget(pmeta); text.addWidget(pmeta2); row.addLayout(text,1)
 
-            _lvl_text=f"{level}/20" if evaluated else "?"
+            _lvl_text=stars_half(level) if evaluated else "?"
             _lvl_color="#8fd8ff" if evaluated else "#8b98b3"
-            lvl=QLabel(_lvl_text); lvl.setAlignment(Qt.AlignCenter); lvl.setFixedSize(48,42)
+            lvl=QLabel(_lvl_text); lvl.setAlignment(Qt.AlignCenter); lvl.setFixedSize(66,42)
             lvl.setStyleSheet(f"background:#0d1727;border:1px solid {_lvl_color};border-radius:8px;color:{_lvl_color};font-weight:1000;font-size:9.5pt;")
             row.addWidget(lvl)
 
@@ -15816,7 +15926,7 @@ class MainWindow(QMainWindow):
             if abs(v)>=1000: return f"{v//1000} k €"
             return f"{v} €"
         _stats_line=QLabel(
-            f"NIVEAU MOYEN {_avg_lvl:.1f}/20  •  ÂGE MOYEN {_avg_age:.1f} ans  •  "
+            f"NIVEAU MOYEN {stars_half(_avg_lvl)}  •  ÂGE MOYEN {_avg_age:.1f} ans  •  "
             f"MASSE {_short_money(_wage)}/mois  •  VALEUR {_short_money(_value)}  •  FINS DE CONTRAT {_exp}")
         _stats_line.setObjectName("Muted")
         _stats_line.setStyleSheet("font-size:8.5pt;font-weight:800;color:#9aa9c0;letter-spacing:.3px;")
@@ -20084,9 +20194,9 @@ class MainWindow(QMainWindow):
 
                     lv=player_level_from_row(r) if r["pid"] is not None else None
 
-                    t.setItem(row,4,_item(f"{lv}/20" if lv else "—",center=True))
+                    t.setItem(row,4,_item(stars_half(lv) if lv else "—",center=True))
 
-                    t.setItem(row,5,_item(f"{int(r['pf'])}/20" if r["pf"] else "—",center=True,color="#c9a8ff" if (r["pf"] or 0)>=17 else None))
+                    t.setItem(row,5,_item(stars_half(r['pf']) if r["pf"] else "—",center=True,color="#c9a8ff" if (r["pf"] or 0)>=17 else None))
 
                     if r["pid"] is None: statut="HORS DU JEU"
 
@@ -25662,7 +25772,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
             self.player_meta.setText(
 
-                f"PROFIL  {lvl}/20 {stars5(lvl)} • {p['position']} • {p['age']} ans • {p['nationality']} • forme {rating20(p['condition'])}/20 • moral {rating20(p['morale'])}/20"
+                f"PROFIL  {stars_half(lvl)} • {p['position']} • {p['age']} ans • {p['nationality']} • forme {rating20(p['condition'])}/20 • moral {rating20(p['morale'])}/20"
 
             )
 
@@ -25713,7 +25823,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
                 pass
         self.player_name.setToolTip(f"{p['first_name']} {p['last_name']} — {p['position']}")
         self.player_meta.setText(
-            f"NIVEAU {lvl}/20 {stars5(lvl)}  •  {p['position']} · {p['age']} ans · {p['nationality']}\n"
+            f"NIVEAU {stars_half(lvl)}  •  {p['position']} · {p['age']} ans · {p['nationality']}\n"
             f"{injury.upper()}  •  FORME {rating20(p['condition'])}/20  •  MORAL {rating20(p['morale'])}/20  •  "
             f"CONTRAT {_years} {'an' if _years==1 else 'ans'}  •  {format_salary_monthly(p)}{_loan_txt}"
         )
@@ -25990,13 +26100,13 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                 lv=int(round(row["level"])) if row["level"] is not None else None
 
-                if lv is not None: tooltips.append(f"Niveau actuel : {lv}/20")
+                if lv is not None: tooltips.append(f"Niveau actuel : {stars_half(lv)}")
 
             elif career_known:
 
                 pot=attr_archive.get(int(row["label"][1:]),(None,None))[1]
 
-                if pot is not None: tooltips.append(f"Potentiel estimé à l'époque : {float(pot):.0f}/20")
+                if pot is not None: tooltips.append(f"Potentiel estimé à l'époque : {stars_half(pot)}")
 
             lrow.addWidget(sm); lrow.addWidget(club_lbl,1)
 
@@ -26014,9 +26124,9 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                     tooltips.append(f"Évolution : {'▲ +' if row['delta']>0 else '▼ '}{int(row['delta'])}")
 
-                level_text=f"{lv}{delta_txt}"
+                level_text=f"{stars_half(lv)}{delta_txt}"
 
-            niv=QLabel(level_text); niv.setFixedWidth(62); niv.setAlignment(Qt.AlignCenter)
+            niv=QLabel(level_text); niv.setFixedWidth(92); niv.setAlignment(Qt.AlignCenter)
 
             niv.setStyleSheet(f"background:#101a2b;border:1px solid #26344f;border-radius:6px;font-size:8pt;font-weight:1000;"
 
@@ -26194,15 +26304,19 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         if not is_own:
 
-            conn=db(); report=conn.execute("SELECT knowledge,accuracy FROM scout_report WHERE player_id=?", (p["id"],)).fetchone(); conn.close()
+            conn=db(); report=conn.execute("SELECT knowledge,accuracy,reports FROM scout_report WHERE player_id=?", (p["id"],)).fetchone(); conn.close()
 
             knowledge=int(report["knowledge"]) if report else knowledge
+
+            scout_reports=int(report["reports"] or 0) if report else int(p["scout_reports"] or 0)
 
             scout_acc=float(report["accuracy"]) if report and report["accuracy"] is not None else 0.6
 
         else:
 
             scout_acc=1.0
+
+            scout_reports=0
 
         stats_known=is_own or (getattr(self,"scout_staff_hired",False) and knowledge>=75)
 
@@ -26241,15 +26355,17 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             loan_label.setStyleSheet("color:#ffd98a;font-size:8.5pt;font-weight:900;")
             loan_label.setWordWrap(True)
 
-        level_text=(f"NIVEAU  {lvl}/20 {stars5(lvl)}" if stats_known else
+        level_text=(f"NIVEAU  {stars_half(lvl)}" if stats_known else
 
-                    f"NIVEAU  ≈ {scout_level_text(p,knowledge,scout_acc).replace('≈','').strip()}" if knowledge>=25 else
+                    f"NIVEAU  {scout_star_text(p,knowledge,scout_acc,'level',getattr(self,'scout_level',0),scout_reports)}")
 
-                    f"NIVEAU  {scout_level_text(p,knowledge,scout_acc)}")
+        potential_text=(f"POTENTIEL  {stars_half(potential)}" if potential_known else
 
-        potential_text=f"POTENTIEL  {potential}/20 {stars5(potential)}" if potential_known else f"POTENTIEL  {scout_potential_text(p,knowledge,scout_acc)}"
+                        f"POTENTIEL  {scout_star_text(p,knowledge,scout_acc,'potential',getattr(self,'scout_level',0),scout_reports)}")
 
         stars=QLabel(f"{level_text}     {potential_text}")
+
+        stars.setToolTip("Niveau et potentiel sont toujours affichés en étoiles. Les estimations des autres clubs dépendent de la qualité du recruteur.")
 
         stars.setStyleSheet(f"color:{'#66e5a8' if stats_known and (lvl>=15 or potential_known and potential>=15) else '#ffd16d' if stats_known else '#b69ad7'};font-weight:900;")
 
@@ -26423,8 +26539,8 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                 season_now=int(cform.execute("SELECT season FROM club WHERE id=1").fetchone()["season"] or 1)
 
-                log_rows=cform.execute("""SELECT fixture_type,matchday,match_date,goals,assists,saves,yellow,red,played,rating
-
+                log_rows=cform.execute("""SELECT fixture_type,matchday,match_date,goals,assists,saves,yellow,red,played,rating,
+                                                  shots,shots_on_target,passes_completed,passes_attempted,tackles,interceptions,fouls,minutes
                                           FROM player_match_log WHERE player_id=? AND season=? ORDER BY id DESC LIMIT 5""",(p["id"],season_now)).fetchall()
 
                 agg=cform.execute("""SELECT fixture_type,COUNT(*) mj,SUM(goals) g,SUM(assists) a,SUM(saves) sv,
@@ -26509,7 +26625,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                         tag="CHAMPIONNAT" if row["fixture_type"]!="friendly" else "AMICAL"
 
-                        chip.setToolTip(f"{tag} · {fmt_date_fr(str(row['match_date']))} · {int(row['goals'] or 0)} but(s), {int(row['yellow'] or 0)} jaune / {int(row['red'] or 0)} rouge")
+                        chip.setToolTip(f"{tag} · {fmt_date_fr(str(row['match_date']))} · {int(row['goals'] or 0)} but(s), {int(row['assists'] or 0)} passe(s) déc., {int(row['shots'] or 0)} tir(s) dont {int(row['shots_on_target'] or 0)} cadré(s), {int(row['passes_completed'] or 0)}/{int(row['passes_attempted'] or 0)} passes, {int(row['tackles'] or 0)} tacle(s), {int(row['interceptions'] or 0)} interception(s), {int(row['fouls'] or 0)} faute(s), {int(row['minutes'] or 0)} min · {int(row['yellow'] or 0)} jaune / {int(row['red'] or 0)} rouge")
 
                     form_row.addWidget(chip)
 
@@ -26618,6 +26734,72 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         hint_note.setObjectName("Muted"); hint_note.setWordWrap(False); hint_note.setMinimumWidth(0); hint_note.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred); al.addWidget(hint_note,2,0,1,3)
 
         lay.addWidget(attrs)
+
+        # --- Traits mentaux caches : indices qualitatifs, jamais de chiffres ---
+        hidden=hidden_attributes_for(p)
+        traits_frame=QFrame(); traits_frame.setObjectName("PlayerSection")
+        tf=QVBoxLayout(traits_frame); tf.setContentsMargins(12,9,12,9); tf.setSpacing(6)
+        traits_title=QLabel("MENTAL CACHÉ  •  INDICES DU STAFF  •  JAMAIS DE CHIFFRES")
+        traits_title.setObjectName("SectionTitle"); tf.addWidget(traits_title)
+        traits_grid=QGridLayout(); traits_grid.setHorizontalSpacing(14); traits_grid.setVerticalSpacing(4)
+        for index,key in enumerate(HIDDEN_TRAIT_KEYS):
+            if is_own:
+                trait_txt=hidden_trait_tier(key,hidden[key])
+                trait_color="#a9d8c3"
+            else:
+                trait_txt=scout_hidden_text(p,key,knowledge,scout_acc,getattr(self,"scout_level",0),scout_reports)
+                trait_color="#b8a9d9" if trait_txt!="—" else "#6a7690"
+            lab=QLabel(HIDDEN_TRAIT_LABELS[key]); lab.setStyleSheet("font-size:8pt;font-weight:700;color:#d9e2f0;")
+            val=QLabel(trait_txt); val.setStyleSheet(f"font-size:8.5pt;font-weight:900;color:{trait_color};")
+            val.setToolTip("Attribut caché : il influence le match (sang-froid, fautes, fatigue, blessures, grands rendez-vous) mais n'est jamais affiché en chiffres. Un recruteur faible peut se tromper.")
+            row=QHBoxLayout(); row.setSpacing(6); row.addWidget(lab); row.addStretch(); row.addWidget(val)
+            wrap=QWidget(); wrap.setLayout(row); traits_grid.addWidget(wrap,index//3,index%3)
+        tf.addLayout(traits_grid)
+        conf_text=("STAFF INTERNE  •  évaluation fiable" if is_own else
+                   scout_confidence_line(knowledge,scout_acc,getattr(self,"scout_level",0),scout_reports,is_own,kind="level",p=p))
+        conf=QLabel(conf_text); conf.setObjectName("Muted"); conf.setWordWrap(True)
+        conf.setStyleSheet("font-size:7.8pt;color:#9aa8c4;")
+        conf.setToolTip("Sources d'erreur : nombre de rapports, niveau du recruteur, fiabilité et connaissance du joueur. Le niveau et le potentiel restent des estimations tant que le dossier n'est pas complet.")
+        tf.addWidget(conf)
+        lay.addWidget(traits_frame)
+
+        # --- Statistiques détaillées de la saison ---
+        stats_visible = is_own or knowledge>=50
+        if stats_visible:
+            sm=int(self.pget(p,"season_matches",0) or 0); sg=int(self.pget(p,"season_goals",0) or 0)
+            sa=int(self.pget(p,"season_assists",0) or 0); ss=int(self.pget(p,"season_saves",0) or 0)
+            sconc=int(self.pget(p,"season_conceded",0) or 0); scl=int(self.pget(p,"season_clean_sheets",0) or 0)
+            ssh=int(self.pget(p,"season_shots",0) or 0); sst=int(self.pget(p,"season_shots_on_target",0) or 0)
+            spc=int(self.pget(p,"season_passes_completed",0) or 0); spa=int(self.pget(p,"season_passes_attempted",0) or 0)
+            stk=int(self.pget(p,"season_tackles",0) or 0); sint=int(self.pget(p,"season_interceptions",0) or 0)
+            sfl=int(self.pget(p,"season_fouls",0) or 0); smin=int(self.pget(p,"season_minutes",0) or 0)
+            pass_pct=f"{round(100.0*spc/spa)} %" if spa else "—"
+            shot_pct=f"{round(100.0*sst/ssh)} %" if ssh else "—"
+            save_pct=f"{round(100.0*ss/(ss+sconc))} %" if (ss+sconc) else "—"
+            stats_frame=QFrame(); stats_frame.setObjectName("PlayerSection")
+            sf=QVBoxLayout(stats_frame); sf.setContentsMargins(12,9,12,9); sf.setSpacing(6)
+            stats_title=QLabel("STATISTIQUES DÉTAILLÉES  •  SAISON EN COURS")
+            stats_title.setObjectName("SectionTitle"); sf.addWidget(stats_title)
+            stats_grid=QGridLayout(); stats_grid.setHorizontalSpacing(8); stats_grid.setVerticalSpacing(6)
+            if str(p.get("position"))=="Gardien":
+                tiles=(("MJ",sm),("ARRÊTS",ss),("% ARRÊTS",save_pct),("CLEAN SHEETS",scl),
+                       ("ENCAISSÉS",sconc),("PASSES DÉC.",spc),("% PASSES",pass_pct),
+                       ("TACLES",stk),("INTERCEPTIONS",sint),("FAUTES",sfl),("MINUTES",smin if smin else "—"))
+            else:
+                tiles=(("MJ",sm),("BUTS",sg),("PASSES DÉC.",sa),("TIRS",ssh),("CADRÉS",sst),
+                       ("% CADRÉS",shot_pct),("PASSES",spc),("% PASSES",pass_pct),
+                       ("TACLES",stk),("INTERCEPTIONS",sint),("FAUTES",sfl),("MINUTES",smin if smin else "—"))
+            for i,(label,value) in enumerate(tiles):
+                tile=QFrame(); tile.setObjectName("KPI"); tl=QVBoxLayout(tile); tl.setContentsMargins(8,4,8,4); tl.setSpacing(0)
+                cap=QLabel(label); cap.setObjectName("Muted"); cap.setStyleSheet("font-size:6.5pt;font-weight:900;letter-spacing:.5px;")
+                val=QLabel(str(value)); val.setStyleSheet("font-size:11pt;font-weight:1000;color:#eef4fb;")
+                tl.addWidget(cap); tl.addWidget(val); stats_grid.addWidget(tile,i//6,i%6)
+            sf.addLayout(stats_grid)
+            note=QLabel("Tirs, passes, duels et minutes sont enregistrés à chaque match. Les pourcentages sont calculés sur la saison.")
+            note.setObjectName("Muted"); note.setWordWrap(True); note.setStyleSheet("font-size:7.5pt;color:#8fa0b8;")
+            sf.addWidget(note)
+            lay.addWidget(stats_frame)
+
 
         if p["injury_matches"]>0 or int(p["injury_days"] or 0)>0:
 
@@ -27246,7 +27428,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         avatar=QLabel(); avatar.setFixedSize(58,58); avatar.setPixmap(self.draw_player_avatar(player,58)); hl.addWidget(avatar)
 
-        info=QVBoxLayout(); info.addWidget(QLabel(f"{player['first_name']} {player['last_name']}")); meta=QLabel(f"{player['position']} • niveau {level}/20 {stars5(level)} • contrat actuel {current_years} an(s)"); meta.setObjectName("Muted"); info.addWidget(meta); hl.addLayout(info,1); lay.addWidget(header)
+        info=QVBoxLayout(); info.addWidget(QLabel(f"{player['first_name']} {player['last_name']}")); meta=QLabel(f"{player['position']} • niveau {stars_half(level)} • contrat actuel {current_years} an(s)"); meta.setObjectName("Muted"); info.addWidget(meta); hl.addLayout(info,1); lay.addWidget(header)
 
         demand=QLabel("Ta proposition sera transmise à l'agent. Sa réponse arrivera sous deux jours dans la page Transferts (contrats internes)."); demand.setWordWrap(True); demand.setObjectName("Muted"); lay.addWidget(demand)
 
@@ -27571,11 +27753,13 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                 bars.append(f"<div style='display:flex;justify-content:space-between;color:#d5c4f5;font-size:11px'><span>{label}</span><b>{value}</b></div>")
 
-        potential_value=scout_potential_text(target,knowledge,accuracy)
+        potential_value=scout_star_text(target,knowledge,accuracy,"potential",getattr(self,"scout_level",0),0)
 
-        potential_line=(f"<div style='margin:8px 0'>Potentiel : <b style='color:{'#6a7690' if potential_value=='—' else '#ffd16d'}'>{potential_value}</b>"
+        potential_line=(f"<div style='margin:8px 0'>Potentiel estimé : <b style='color:{'#6a7690' if potential_value in ('—','Potentiel inconnu','?') else '#ffd16d'}'>{potential_value}</b>"
 
-                        + ("" if knowledge>=100 else "  <span style='color:#6a7690'>(dernier secret : strictement réservé à 100 %)</span>")+"</div>")
+                        + ("" if knowledge>=100 else "  <span style='color:#6a7690'>(le potentiel reste le dernier secret du scouting)</span>")+"</div>")
+
+        potential_line+=(f"<div style='color:#8fa4b9;font-size:10.5px'>{scout_confidence_line(knowledge,accuracy,getattr(self,'scout_level',0),0,False,'potential',target)}</div>")
 
         return head+f"<div style='margin:10px 0;padding:9px;background:#191d35;border:1px solid #3d3262;border-radius:8px'>{public_line}</div>"+contract_block+stats_line+"".join(bars)+potential_line+"</div>"
 
@@ -28392,14 +28576,14 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
                 cells=[f"{p['first_name']} {p['last_name']}", p["position"], str(int(p["age"] or 0)),
                        p["club_name"], f"Ligue {p['club_division']}",
                        str(p["loan_promise"] or "ROTATION").capitalize(),
-                       f"{cur}/20", self._loan_evolution_text(dl,dp), play_txt,
+                       stars_half(cur), self._loan_evolution_text(dl,dp), play_txt,
                        f"{note(p):.1f}" if int(p["season_rating_count"] or 0) else "—",
                        "Fin de saison"]
                 for c,text in enumerate(cells):
                     item=QTableWidgetItem(text)
                     if c==0: item.setData(Qt.UserRole,int(p["id"]))
                     if c==7:
-                        item.setToolTip((f"Niveau {cur}/20 • {dl:+d} niveau(x) • {dp:+d} pts d'attributs"
+                        item.setToolTip((f"Niveau {stars_half(cur)} • {dl:+d} niveau(x) • {dp:+d} pts d'attributs"
                                          if dl is not None else "Pas de référence en début de saison"))
                     if c==8:
                         _basis=(f"{since} match(s) depuis le prêt sur {played}"
@@ -28427,14 +28611,14 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
                 expected,ratio=self._loan_expected(p,played)
                 play_txt=(f"{since}/{played}" if has_start else f"{matches} m. saison")
                 cells=[f"{p['first_name']} {p['last_name']}", p["position"], str(int(p["age"] or 0)),
-                       p["club_name"], f"{cur}/20", self._loan_evolution_text(dl,dp), play_txt,
+                       p["club_name"], stars_half(cur), self._loan_evolution_text(dl,dp), play_txt,
                        f"{note(p):.1f}" if int(p["season_rating_count"] or 0) else "—",
                        "Fin de saison"]
                 for c,text in enumerate(cells):
                     item=QTableWidgetItem(text)
                     if c==0: item.setData(Qt.UserRole,int(p["id"]))
                     if c==5:
-                        item.setToolTip((f"Niveau {cur}/20 • {dl:+d} niveau(x) • {dp:+d} pts d'attributs"
+                        item.setToolTip((f"Niveau {stars_half(cur)} • {dl:+d} niveau(x) • {dp:+d} pts d'attributs"
                                          if dl is not None else "Pas de référence en début de saison"))
                     if c==6:
                         _basis=(f"{since} match(s) depuis le prêt sur {played}"
@@ -28561,7 +28745,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             form.addWidget(QLabel("JOUEUR"),0,0)
             player_combo=QComboBox()
             for p in eligible:
-                player_combo.addItem(f"{p['first_name']} {p['last_name']} • {p['position']} • {p['age']} ans • niveau {player_level_from_row(p)}/20",int(p["id"]))
+                player_combo.addItem(f"{p['first_name']} {p['last_name']} • {p['position']} • {p['age']} ans • {stars_half(player_level_from_row(p))}",int(p["id"]))
             if player_id is not None:
                 idx=next((i for i in range(player_combo.count()) if int(player_combo.itemData(i) or 0)==int(player_id)),-1)
                 if idx>=0: player_combo.setCurrentIndex(idx)
@@ -30207,9 +30391,9 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
             potential = player_potential_from_row(p)
 
-            level_text = (f"{stars5(lvl)} {lvl}/20" if reveal_stats else scout_level_text(p,knowledge,accuracy))
+            level_text = (stars_half(lvl) if reveal_stats else scout_star_text(p,knowledge,accuracy,"level",getattr(self,"scout_level",0),int(p["scout_reports"] or 0),compact=True))
 
-            potential_text = (f"{stars5(potential)} {potential}/20" if reveal_potential else scout_potential_text(p,knowledge,accuracy))
+            potential_text = (stars_half(potential) if reveal_potential else scout_star_text(p,knowledge,accuracy,"potential",getattr(self,"scout_level",0),int(p["scout_reports"] or 0),compact=True))
 
             sort_values = {1: shirt if shirt and not p["is_free_agent"] else -1, 5: int(p["age"]),
 
@@ -32560,7 +32744,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                 self.roster_fit_value.setText(str(available)); self.roster_injured_value.setText(str(injured))
 
-                self.roster_avg_value.setText(f"{average_level}/20"); self.roster_wage_value.setText(format_euros(wages, " / mois"))
+                self.roster_avg_value.setText(stars_half(average_level)); self.roster_wage_value.setText(format_euros(wages, " / mois"))
 
                 self.roster_value_value.setText(format_euros(total_value))
 
@@ -32685,7 +32869,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
                 _loan_from=int(p["loan_from_club"] or 0) if "loan_from_club" in p.keys() else 0
                 values = ["●", f"{shirt:02d}" if shirt else "—", f"{p['first_name']} {p['last_name']}", p["position"], str(p["age"]),
 
-                          *rating_values, str(cond_score), str(level), str(potential), str(morale_score),
+                          *rating_values, str(cond_score), stars_half(level), stars_half(potential), str(morale_score),
 
                           ("PRÊT" if _loan_from else f"{p['contract_years']} an"), format_euros(int(p["salary"] or 0)), value_label,
 
@@ -32737,7 +32921,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                             f"Postes secondaires : {sec_txt}\n"
 
-                            f"Pied {player_preferred_foot(p)} • polyvalence {player_versatility(p)}/100 • niveau {level}/20")
+                            f"Pied {player_preferred_foot(p)} • polyvalence {player_versatility(p)}/100 • niveau {stars_half(level)}")
 
                     elif c == 0:
 
@@ -32785,7 +32969,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                         if level>=15: item.setFont(QFont("Segoe UI",9,QFont.Bold))
 
-                        item.setToolTip(f"Niveau {level}/20 {stars5(level)} • potentiel estimé {potential}/20 {stars5(potential)}")
+                        item.setToolTip(f"Niveau {stars_half(level)} • potentiel estimé {stars_half(potential)}")
 
                     elif c == 13:
 
@@ -32795,7 +32979,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                         if potential>=15: item.setFont(QFont("Segoe UI",9,QFont.Bold))
 
-                        item.setToolTip(f"Potentiel estimé {potential}/20 {stars5(potential)} — plafond atteignable avec du travail.")
+                        item.setToolTip(f"Potentiel estimé {stars_half(potential)} — plafond atteignable avec du travail.")
 
                     elif c == 14:
 
@@ -34237,7 +34421,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
             def _line(p, level, extra=""):
                 shirt=int(p["shirt_number"] or 0)
-                first=f"#{shirt:02d}  {p['first_name']} {p['last_name']}   •   {level:.1f}/20"
+                first=f"#{shirt:02d}  {p['first_name']} {p['last_name']}   •   {stars_half(level)}"
                 flags=[]
                 if int(p["contract_years"] or 0)<=1: flags.append("FIN DE CONTRAT")
                 if int(p["transfer_listed"] or 0): flags.append("LISTÉ")
@@ -34261,7 +34445,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
                                           "flags":"FIN DE CONTRAT" if int(p['contract_years'] or 0)<=1 else ("LISTÉ" if int(p['transfer_listed'] or 0) else "")})
                 it.setIcon(QIcon(self.draw_player_avatar(p,44)))
                 it.setForeground(QColor("#8de5b9") if level>=15 else QColor("#d8e968") if level>=12 else QColor("#dce5f0"))
-                it.setToolTip(f"{p['first_name']} {p['last_name']}\n{p['position']} · {int(p['age'] or 0)} ans · {level:.1f}/20 {stars5(level)}\nForme {rating20(p['condition'])}/20 · moral {rating20(p['morale'])}/20\nContrat {int(p['contract_years'] or 0)} an(s) · {format_salary_monthly(p)}\nGlisser sur le terrain • double-clic : fiche")
+                it.setToolTip(f"{p['first_name']} {p['last_name']}\n{p['position']} · {int(p['age'] or 0)} ans · {stars_half(level)}\nForme {rating20(p['condition'])}/20 · moral {rating20(p['morale'])}/20\nContrat {int(p['contract_years'] or 0)} an(s) · {format_salary_monthly(p)}\nGlisser sur le terrain • double-clic : fiche")
                 it.setSizeHint(QSize(300,76))
                 self.tactic_bench.addItem(it); shown+=1
 
@@ -34327,7 +34511,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         self.bench_preview_name.setText(f"#{shirt:02d}  {player['first_name']} {player['last_name']}")
         self.bench_preview_name.setToolTip(f"#{shirt:02d} {player['first_name']} {player['last_name']} • {player['position']} • {int(player['age'] or 0)} ans")
 
-        self.bench_preview_meta.setText(f"{player['position']} · {int(player['age'] or 0)} ans · {overall:.1f}/20 · C{int(player['contract_years'] or 0)} an"+(f" · {disc}" if disc else ""))
+        self.bench_preview_meta.setText(f"{player['position']} · {int(player['age'] or 0)} ans · {stars_half(overall)} · C{int(player['contract_years'] or 0)} an"+(f" · {disc}" if disc else ""))
 
         self.bench_preview_stats.setText(
             f"TEC {rating20(player['technique'])} · PAS {rating20(player['passing'])} · "
@@ -34738,6 +34922,9 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         keeper_rating=max((float(p.get("goalkeeper",45) or 45)*.70+float(p.get("condition",70) or 70)*.12+float(p.get("stamina",45) or 45)*.08+float(p.get("positioning",50) or 50)*.10 for p in keepers),default=average("defense",field)*.55+average("stamina",field)*.45)
 
+        hidden_rows=[hidden_attributes_for(p) for p in field]
+        hidden_avg={key: sum(row[key] for row in hidden_rows)/max(1,len(hidden_rows)) for key in HIDDEN_TRAIT_KEYS}
+
         return {"attack":average("finishing")*.32+average("technique")*.24+dribble_avg*.14+speed_avg*.08+average("passing")*.14+effective_stamina*.08,
 
                 "defense":average("defense")*.42+posn_avg*.17+average("stamina")*.19+average("technique")*.12+average("passing")*.10,
@@ -34746,7 +34933,9 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                 "keeper":keeper_rating,"stamina":effective_stamina,
 
-                "dribble":dribble_avg,"speed":speed_avg,"positioning":posn_avg}
+                "dribble":dribble_avg,"speed":speed_avg,"positioning":posn_avg,
+
+                **hidden_avg}
 
 
 
@@ -35509,7 +35698,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
                     new_level=player_level_from_row(conn.execute("SELECT * FROM player WHERE id=?",(pid,)).fetchone())
                     if new_level!=level:
                         add_news(conn,"Évolution joueur",
-                                 f"{p['first_name']} {p['last_name']} : niveau {level}/20 → {new_level}/20 ({', '.join(a.rstrip('-')+(' ▼' if a.endswith('-') else ' ▲') for a in applied)}).")
+                                 f"{p['first_name']} {p['last_name']} : niveau {stars_half(level)} → {stars_half(new_level)} ({', '.join(a.rstrip('-')+(' ▼' if a.endswith('-') else ' ▲') for a in applied)}).")
         except Exception as exc:
             self.log_error("player_development",exc)
 
@@ -36316,7 +36505,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                     conn.execute("DELETE FROM meta WHERE key='academy_invest_season'")
 
-                names=" • ".join(f"{f} {l} ({age} ans, {pos}, {lvl}/20)" for f,l,age,pos,lvl,_ in made)
+                names=" • ".join(f"{f} {l} ({age} ans, {pos}, {stars_half(lvl)})" for f,l,age,pos,lvl,_ in made)
 
                 note=f"note {grade_eff}/100{' (investissement +8)' if boost else ''}"
 
@@ -37362,7 +37551,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         except Exception as _exc:
             self.log_error("return_outgoing_loans",_exc)
 
-        conn.execute("UPDATE player SET season_goals=0,season_passes=0,season_assists=0,season_saves=0,season_conceded=0,season_yellow=0,season_red=0,season_matches=0,season_rating_sum=0,season_rating_count=0")
+        conn.execute("UPDATE player SET season_goals=0,season_passes=0,season_assists=0,season_saves=0,season_conceded=0,season_yellow=0,season_red=0,season_matches=0,season_rating_sum=0,season_rating_count=0,season_shots=0,season_shots_on_target=0,season_passes_completed=0,season_passes_attempted=0,season_tackles=0,season_interceptions=0,season_fouls=0,season_minutes=0,season_clean_sheets=0")
 
         # PRÊTS : retour au club propriétaire en fin de saison.
         for _loan in conn.execute("SELECT id,loan_from_club,loan_until_season FROM player WHERE club_id=1 AND COALESCE(loan_from_club,0)>0").fetchall():
@@ -38613,7 +38802,11 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                         attr_bits.append(f"{label} {scout_attr_text(player,key,knowledge,accuracy)}")
 
-                    potential_txt=scout_potential_text(player,knowledge,accuracy)
+                    potential_txt=scout_star_text(player,knowledge,accuracy,"potential",int(data.get("scout_level",0) or 0),reports)
+
+                    level_txt=scout_star_text(player,knowledge,accuracy,"level",int(data.get("scout_level",0) or 0),reports)
+
+                    conf_txt=scout_confidence_line(knowledge,accuracy,int(data.get("scout_level",0) or 0),reports,False,"level",player)
 
                     exercice="Précis." if exact_attrs else "À affiner avec d'autres observations sur ce joueur." if knowledge<75 else "Fiable à ±1 près."
 
@@ -38623,9 +38816,9 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                     body=(f"Observation {str(data.get('effort','standard'))} sur {leak}.\n"
 
-                          f"Profil actuel : {scout_level_text(player,knowledge,accuracy)}. Attributs : {(' • '.join(attr_bits))[:400]}.\n"
+                          f"Niveau estimé : {level_txt}. Potentiel : {potential_txt}. Attributs : {(' • '.join(attr_bits))[:400]}.\n"
 
-                          f"Potentiel : {potential_txt} ({exercice}) Fiabilité du rapport : {int(round(accuracy*100))} %.")
+                          f"{conf_txt}. {exercice}")
 
                     data.update({"outcome":"report","knowledge":knowledge,"reports":reports,"accuracy":accuracy,"tier":tier})
 
@@ -39853,6 +40046,10 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             "simulation_seed":simulation_seed,
 
             "timeline": [], "goals": [], "player_goals": {}, "player_saves": {}, "player_passes": {}, "player_yellow": {}, "player_red": {}, "half_time_score": None, "momentum": 0,
+
+            "player_shots":{}, "player_target":{}, "player_passes_completed":{}, "player_passes_attempted":{},
+
+            "player_tackles":{}, "player_interceptions":{}, "player_fouls":{}, "player_minutes":{}, "player_conceded":{},
 
             "possession_samples": [],"possession_seconds":{"h":0,"a":0},"last_possession_home":50,
 
@@ -41943,6 +42140,11 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                 inj_base += 0.005
 
+            try:
+                inj_base *= 0.60 + hidden_attributes_for(p)["injury_proneness"] / 100.0 * 0.90
+            except Exception:
+                pass
+
             # Plafond de sûreté : jamais plus d'une blessure par rencontre (côté coach).
 
             if not s["injuries"] and rng.random() < inj_base:
@@ -42171,11 +42373,27 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         for player in players:
 
+            factor=1.0
+            try:
+                traits=hidden_attributes_for(player)
+                if field=="fatigue":
+                    factor*=1.0 + (traits["work_rate"]-50)*0.0040 - (traits["professionalism"]-50)*0.0020
+                elif field=="shot":
+                    factor*=1.0 + (traits["composure"]-50)*0.0030 + (traits["consistency"]-50)*0.0012
+                elif field=="foul":
+                    factor*=1.0 + (traits["aggression"]-50)*0.0040 - (traits["composure"]-50)*0.0010
+                elif field=="pass":
+                    factor*=1.0 + (traits["work_rate"]-50)*0.0012 + (traits["composure"]-50)*0.0010
+            except Exception:
+                pass
+
             key=s.get("individual_instructions",{}).get(str(player.get("id")))
 
             if key in INDIVIDUAL_INSTRUCTION_MODIFIERS:
 
-                vals.append(float(INDIVIDUAL_INSTRUCTION_MODIFIERS[key].get(field,default)))
+                vals.append(float(INDIVIDUAL_INSTRUCTION_MODIFIERS[key].get(field,default))*factor)
+            else:
+                vals.append(factor)
 
         return sum(vals)/len(vals) if vals else default
 
@@ -42253,6 +42471,14 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         opponent_profile=self.match_team_profile(s.get("opponent_lineup",[]),s.get("opponent_conditions",{}))
 
+        # Matchs à enjeu : le trait caché "big_matches" pèse sur les grands rendez-vous.
+        if s.get("fixture_type")=="cup" or getattr(self,"_current_derby",False):
+            manager_profile=dict(manager_profile); opponent_profile=dict(opponent_profile)
+            manager_profile["attack"]=float(manager_profile.get("attack",45))*(1.0+(manager_profile.get("big_matches",50)-50)*0.0008)
+            manager_profile["defense"]=float(manager_profile.get("defense",45))*(1.0+(manager_profile.get("big_matches",50)-50)*0.0005)
+            opponent_profile["attack"]=float(opponent_profile.get("attack",45))*(1.0+(opponent_profile.get("big_matches",50)-50)*0.0008)
+            opponent_profile["defense"]=float(opponent_profile.get("defense",45))*(1.0+(opponent_profile.get("big_matches",50)-50)*0.0005)
+
         opponent_tactics=s.get("opponent_tactics",{})
 
         # MENTALITE : vrai arbitrage. Offensive pousse mais s'expose, Prudente
@@ -42278,6 +42504,11 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         manager_attack=(manager_profile["attack"]-opponent_profile["defense"])*.0012
 
         opponent_attack=(opponent_profile["attack"]-manager_profile["defense"])*.0012
+
+        # Traits caches collectifs : activite et sang-froid debloquent les
+        # situations, l'agressivite aide a recuperer mais expose aux fautes.
+        manager_attack+=(manager_profile.get("work_rate",50)-50)*0.00030+(manager_profile.get("composure",50)-50)*0.00020
+        opponent_attack+=(opponent_profile.get("work_rate",50)-50)*0.00030+(opponent_profile.get("composure",50)-50)*0.00020
 
         # ECART DE NIVEAU AMPLIFIE (retour « une equipe enorme gagne trop peu
 
@@ -42420,6 +42651,14 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
             self.log_match_event(f"{stamp} — Corner pour {prefix} après une déviation défensive.","corner",minute)
 
+        def credit_defender(code,key):
+            roster=s.get("lineup",[]) if code==manager_side else s.get("opponent_lineup",[])
+            players=[p for p in roster if str(p.get("position"))!="Gardien"] or roster
+            if not players: return
+            hero=rng.choice(players)
+            if hero.get("id") is not None:
+                s[f"player_{key}"][hero["id"]]=s[f"player_{key}"].get(hero["id"],0)+1
+
         self.match_banner.animate_action(side,"build")
 
         # Le compte des quatre secondes ne concerne pas une possession ordinaire;
@@ -42430,11 +42669,19 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         turnover_chance=.018+(.027 if press_level else .008)+min(.10,max(0,int(s.get("possession_ticks",0))-2)*.025)
 
+        # Pression cachee : l'agressivite et l'activite du bloc sans ballon
+        # augmentent les pertes de balle, sans jamais etre affichees.
+        pressing_profile = opponent_profile if side==manager_side else manager_profile
+        turnover_chance *= 1.0 + (pressing_profile.get("aggression",50)-50)*0.0010 + (pressing_profile.get("work_rate",50)-50)*0.0010
+        turnover_chance = max(.006,min(.32,turnover_chance))
+
         if rng.random()<turnover_chance:
 
             regain_side=other_side
 
             s["interceptions"][regain_side]+=1; s["possession_side"]=regain_side; s["possession_ticks"]=0; s["build_up"][side]=0; s["set_piece"]=None
+
+            credit_defender(regain_side,"tackles")
 
             self.match_banner.animate_action(regain_side,"turnover")
 
@@ -42492,6 +42739,11 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         # on defend plus prudemment pour eviter le 10 m.
         if int(s["fouls_half"].get(side,0) or 0) >= 5: foul_window*=.65
 
+        # L'agressivite cachee du bloc qui defend augmente le risque de faute.
+        if side != manager_side:
+            fouling_profile = manager_profile if side==manager_side else opponent_profile
+            foul_window *= 1.0 + (fouling_profile.get("aggression",50)-50)*0.0050
+
         foul_threshold=shot_probability+foul_window
 
         if side == manager_side: foul_threshold=shot_probability + foul_window*self._individual_effect(side,"foul")
@@ -42516,6 +42768,10 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
             s[f"shots_{side}"]+=1
 
+            shot_name,shot_id=self.random_scorer(side)
+
+            if shot_id is not None: s["player_shots"][shot_id]=s["player_shots"].get(shot_id,0)+1
+
             # Le dribble serré crée l'espace qui augmente la précision de la frappe (futsal).
 
             target_chance=max(.43,min(.78,.61+(shooting_profile["attack"]-60)*.0015+(shooting_profile.get("dribble",55)-58)*.0009))
@@ -42526,11 +42782,15 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                 s[f"target_{side}"]+=1
 
+                if shot_id is not None: s["player_target"][shot_id]=s["player_target"].get(shot_id,0)+1
+
                 finishing_edge=(shooting_profile["finishing"]-defending_profile["keeper"])*.0022
 
                 conversion=max(.13,min(.58,.30+finishing_edge+attack_quality*.30))
 
                 conversion*=manager_conv if side==manager_side else opponent_conv
+
+                conversion*=1.0 + (shooting_profile.get("composure",50)-50)*0.0012
 
                 if rng.random() < conversion:
 
@@ -42544,7 +42804,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                         self.restore_team_after_red(conceded_side,minute,"but encaissé")
 
-                    scorer,scorer_id=self.random_scorer(side)
+                    scorer,scorer_id=shot_name,shot_id
 
                     if scorer_id is not None: s["player_goals"][scorer_id]=s["player_goals"].get(scorer_id,0)+1
 
@@ -42610,6 +42870,16 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             s[f"fouls_{side}"]+=1
 
             s["fouls_half"][side] += 1
+
+            foul_roster = s.get("lineup",[]) if side==manager_side else s.get("opponent_lineup",[])
+
+            foul_candidates=[p for p in foul_roster if str(p.get("position"))!="Gardien"] or foul_roster
+
+            if foul_candidates:
+
+                culprit=rng.choice(foul_candidates)
+
+                if culprit.get("id") is not None: s["player_fouls"][culprit["id"]]=s["player_fouls"].get(culprit["id"],0)+1
 
             fouled_side=other_side
 
@@ -42786,6 +43056,8 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
             s["passes"][side]+=1
 
+            if passer.get("id") is not None: s["player_passes_attempted"][passer["id"]]=s["player_passes_attempted"].get(passer["id"],0)+1
+
             passing_edge=(shooting_profile["passing"]-defending_profile["defense"])*.0022
 
             passing_edge+=possession_edge if side==manager_side else -possession_edge
@@ -42816,6 +43088,8 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                 s["passes_completed"][side]+=1; s["possession_ticks"]=int(s.get("possession_ticks",0))+1
 
+                if passer.get("id") is not None: s["player_passes_completed"][passer["id"]]=s["player_passes_completed"].get(passer["id"],0)+1
+
                 # CONSTRUCTION VIVE (banc numerique) : une passe vaut 2 crans de
 
                 # build — une seule passe ouvre TOUTES les options d'attaque.
@@ -42835,6 +43109,8 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
                 if rng.random()<interception_chance:
 
                     s["interceptions"][other_side]+=1
+
+                    credit_defender(other_side,"interceptions")
 
                     self.log_match_event(f"{stamp} — Interception de {s['home'] if other_side=='h' else s['away']} sur la passe de {passer['last_name']}.","interception",minute)
 
@@ -43927,10 +44203,11 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             level_cap=QLabel("NIVEAU"); level_cap.setFixedWidth(58)
             level_cap.setStyleSheet("font-size:6.5pt;font-weight:900;color:#7f93ad;letter-spacing:.5px;")
             level_bar=LevelBar(level20,max(1,potential20),"#7de0aa" if level20>=15 else "#d9b46a" if level20>=10 else "#e0838f")
-            level_bar.setToolTip(f"Niveau actuel {level:.1f}/20 sur un potentiel de {pot:.0f}/20.")
-            level_val=QLabel(f"{level20} / {potential20}"); level_val.setFixedWidth(52)
+            level_bar.setToolTip(f"Niveau actuel {stars_half(level)} sur un potentiel de {stars_half(pot)}.")
+            level_val=QLabel(f"{stars_half(level)}"); level_val.setFixedWidth(86)
             level_val.setAlignment(Qt.AlignRight|Qt.AlignVCenter)
             level_val.setStyleSheet("font-size:8pt;font-weight:1000;color:#eef4fb;")
+            level_val.setToolTip("Niveau actuel et plafond exprimés uniquement en étoiles.")
             level_row.addWidget(level_cap); level_row.addWidget(level_bar,1); level_row.addWidget(level_val)
             col.addLayout(level_row)
             base=baselines.get(int(p["id"]))
@@ -44002,7 +44279,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             h.addLayout(col,1)
             deltas=(("TEC",p["tech30"]),("PAS",p["pas30"]),("FIN",p["fin30"]),("DÉF",p["def30"]),("END",p["end30"]))
             detail=" • ".join(f"{label} {int(v or 0):+d}" for label,v in deltas if int(v or 0))
-            card.setToolTip(f"Potentiel {pot:.0f}/20 • {total} point(s) depuis le début de saison"
+            card.setToolTip(f"Potentiel {stars_half(pot)} • {total} point(s) depuis le début de saison"
                             + (f" • {detail}" if detail else ""))
             self.training_evo_cards.append(card)
         self._reflow_training_cards(grid,self.training_evo_cards)
@@ -44154,7 +44431,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
                 top.addWidget(more)
                 col.addLayout(top)
                 _room_txt=("plafond atteint" if capped else f"reste {room:.1f} pt avant le plafond")
-                meta=QLabel(f"{int(pl['age'] or 0)} ans  •  niveau {level:.1f}/20  •  potentiel {pot:.0f}/20  •  {_room_txt}")
+                meta=QLabel(f"{int(pl['age'] or 0)} ans  •  niveau {stars_half(level)}  •  potentiel {stars_half(pot)}  •  {_room_txt}")
                 meta.setMinimumWidth(0); meta.setSizePolicy(QSizePolicy.Ignored,QSizePolicy.Preferred)
                 meta.setStyleSheet("font-size:7pt;color:#7f93ad;"); col.addWidget(meta)
                 focus_row=QHBoxLayout(); focus_row.setSpacing(6)
@@ -44189,7 +44466,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
                 col.addLayout(form_row)
                 h.addLayout(col,1)
                 card.setToolTip(f"{TRAINING_ATTRIBUTE_NAMES.get(cur, 'attribut du poste') if cur else 'Automatique (poste)'} • "
-                                f"niveau {level:.1f}/20 • potentiel {pot:.0f}/20")
+                                f"niveau {stars_half(level)} • potentiel {stars_half(pot)}")
                 self.training_indiv_cards.append(card)
             self._reflow_training_cards(grid,self.training_indiv_cards)
             if hasattr(self,"training_indiv_empty"):
@@ -46177,7 +46454,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         finally:
             conn.close()
         self.refresh_all()
-        self.show_game_message("Centre de formation",f"{p['first_name']} {p['last_name']} signe au centre ({p['position']}, potentiel {p['potential']}/20).","success")
+        self.show_game_message("Centre de formation",f"{p['first_name']} {p['last_name']} signe au centre ({p['position']}, potentiel {stars_half(p['potential'])}).","success")
         return True
 
     def invest_academy(self):
@@ -46337,7 +46614,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
             for i,p in enumerate(rows):
                 lvl=player_level_from_row(p); pot=player_potential_from_row(p)
                 vals=[f"{p['first_name']} {p['last_name']}", str(int(p['age'])), str(p['position']),
-                      f"{lvl}/20", f"{pot}/20", f"{rating20(p['condition'])}/20",
+                      stars_half(lvl), stars_half(pot), f"{rating20(p['condition'])}/20",
                       (f"+{bonus} %" if bonus else "centre fermé")]
                 for j,v in enumerate(vals):
                     it=QTableWidgetItem(str(v))
@@ -46417,7 +46694,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                     lv=player_level_from_row(dict(r))
 
-                    pieces.append(f"{r['first_name']} {r['last_name']} ({r['age']} ans, {r['position']}, {lv}/20)")
+                    pieces.append(f"{r['first_name']} {r['last_name']} ({r['age']} ans, {r['position']}, {stars_half(lv)})")
 
                 self.academy_promo_label.setText("JEUNES ACTUELS : "+" • ".join(pieces))
 
@@ -47504,6 +47781,24 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                 lineup_ids=s.get("lineup") or []
 
+                shot_log={int(pid):int(count) for pid,count in (s.get("player_shots") or {}).items()}
+
+                target_log={int(pid):int(count) for pid,count in (s.get("player_target") or {}).items()}
+
+                pass_completed_log={int(pid):int(count) for pid,count in (s.get("player_passes_completed") or {}).items()}
+
+                pass_attempted_log={int(pid):int(count) for pid,count in (s.get("player_passes_attempted") or {}).items()}
+
+                tackle_log={int(pid):int(count) for pid,count in (s.get("player_tackles") or {}).items()}
+
+                interception_log={int(pid):int(count) for pid,count in (s.get("player_interceptions") or {}).items()}
+
+                foul_log={int(pid):int(count) for pid,count in (s.get("player_fouls") or {}).items()}
+
+                manager_conceded=int(s.get("ag") if manager_side=="h" else s.get("hg")) if not is_friendly else 0
+
+                manager_gk_id=next((int(pl["id"]) for pl in lineup_ids if str(pl.get("position"))=="Gardien"),None)
+
                 fixture_id_log=s.get("fixture_id") or 0
 
                 matchday_log=0 if is_friendly else int(career["matchday"] or 0)
@@ -47514,9 +47809,11 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                     pid=int(player["id"])
 
-                    conn.execute("""INSERT INTO player_match_log(player_id,season,fixture_id,fixture_type,matchday,match_date,goals,assists,saves,yellow,red,played,rating)
+                    played_now=1 if any(int(pl["id"])==pid for pl in lineup_ids) else 0
 
-                                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    conn.execute("""INSERT INTO player_match_log(player_id,season,fixture_id,fixture_type,matchday,match_date,goals,assists,saves,yellow,red,played,rating,shots,shots_on_target,passes_completed,passes_attempted,tackles,interceptions,fouls,minutes,conceded)
+
+                                    VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
 
                                  (pid,log_season,fixture_id_log,log_type,matchday_log,match_date_log,
 
@@ -47524,9 +47821,19 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                                   card_log.get((pid,"yellow"),0),card_log.get((pid,"red"),0),
 
-                                  1 if any(int(pl["id"])==pid for pl in lineup_ids) else 0,
+                                  played_now,
 
-                                  log_ratings.get(pid)))
+                                  log_ratings.get(pid),
+
+                                  shot_log.get(pid,0),target_log.get(pid,0),
+
+                                  pass_completed_log.get(pid,0),pass_attempted_log.get(pid,0),
+
+                                  tackle_log.get(pid,0),interception_log.get(pid,0),foul_log.get(pid,0),
+
+                                  40 if played_now else 0,
+
+                                  manager_conceded if (pid==manager_gk_id and not is_friendly) else 0))
 
             except Exception as exc:
 
@@ -47572,6 +47879,22 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                     conn.execute("UPDATE player SET season_saves=season_saves+? WHERE id=?",(int(count),int(pid)))
 
+                for source,target in (("player_shots","season_shots"),("player_target","season_shots_on_target"),
+
+                                      ("player_passes_completed","season_passes_completed"),("player_passes_attempted","season_passes_attempted"),
+
+                                      ("player_tackles","season_tackles"),("player_interceptions","season_interceptions"),
+
+                                      ("player_fouls","season_fouls")):
+
+                    for pid,count in (s.get(source) or {}).items():
+
+                        conn.execute(f"UPDATE player SET {target}={target}+? WHERE id=?",(int(count),int(pid)))
+
+                for player in list(s.get("lineup",[]))+list(s.get("opponent_lineup",[])):
+
+                    conn.execute("UPDATE player SET season_minutes=season_minutes+40 WHERE id=?",(int(player["id"]),))
+
                 # Buts encaissés par le gardien titulaire de chaque côté (saison en cours)
 
                 is_home=bool(s.get("is_home",True))
@@ -47588,9 +47911,17 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                     conn.execute("UPDATE player SET season_conceded=season_conceded+? WHERE id=?",(manager_conceded,int(manager_gk["id"])))
 
+                if manager_gk is not None and manager_conceded==0:
+
+                    conn.execute("UPDATE player SET season_clean_sheets=season_clean_sheets+1 WHERE id=?",(int(manager_gk["id"]),))
+
                 if opponent_gk is not None and opponent_conceded>0:
 
                     conn.execute("UPDATE player SET season_conceded=season_conceded+? WHERE id=?",(opponent_conceded,int(opponent_gk["id"])))
+
+                if opponent_gk is not None and opponent_conceded==0:
+
+                    conn.execute("UPDATE player SET season_clean_sheets=season_clean_sheets+1 WHERE id=?",(int(opponent_gk["id"]),))
 
                 # Cartons officiels uniquement.
 

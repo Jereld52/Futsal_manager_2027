@@ -9877,3 +9877,82 @@ désormais explicitement.
   4,68 buts/match, 0 erreur.
 - Aucun `.exe` reconstruit.
 
+
+## Annexe HO - Attributs cachés, étoiles et scouting imparfait (15/11/2026)
+
+### 1) ATTRIBUTS CACHÉS
+- Neuf traits mentaux/cachés, jamais affichés en chiffres :
+  **sang-froid, régularité, matchs à enjeu, activité, agressivité, leadership,
+  professionnalisme, fragilité, polyvalence**.
+- Ils sont dérivés de façon **stable** à partir de l'identité du joueur
+  (id/nom/poste/âge) : aucune migration de sauvegarde, mêmes traits après
+  rechargement, et aucun risque d'écraser les données existantes.
+- Le poste et l'âge orientent le profil (un gardien est plus calme, un ailier
+  plus actif, un vétéran plus professionnel, etc.) sans caricature.
+
+### 2) NIVEAU ET POTENTIEL EN ÉTOILES
+- Échelle **0,5 à 5 étoiles par demi-pas** : `½`, `★`, `★½`, `★★`…
+- Le niveau et le potentiel ne sont plus affichés en `/20` dans l'interface
+  du jeu : fiches joueurs, marché, effectif, académie, prêts, formation,
+  comparaisons et rapports de scouting.
+- Les notes de **performance** (note de match, forme, moral) restent en `/20` :
+  elles ne révèlent pas le niveau réel du joueur.
+- L'éditeur de sauvegarde conserve les valeurs internes pour l'administration.
+
+### 3) ERREUR DE SCOUTING
+- `scout_star_band()` estime le niveau et le potentiel avec :
+  - un **biais stable** par joueur et par recruteur ;
+  - une **amplitude** qui dépend de la fiabilité, de la connaissance, du niveau
+    du recruteur et du nombre de rapports ;
+  - le **potentiel** plus difficile à percer que le niveau actuel.
+- Un recruteur faible peut donc **surestimer ou sous-estimer** un joueur.
+- La fiche affiche une ligne de confiance :
+  `N rapports • recruteur niv. X/5 • fiabilité Y % • erreur possible ±Z ★`.
+- Les indices sur les traits cachés sont eux aussi qualitatifs et peuvent être
+  faux avec un mauvais recruteur ; ils restent invisibles sous 25 % de connaissance.
+- Les rapports de scouting dans la messagerie affichent désormais étoiles,
+  potentiel estimé et sources d'erreur.
+
+### 4) STATISTIQUES DÉTAILLÉES
+- Nouveau journal par match : tirs, tirs cadrés, passes tentées/réussies,
+  tacles, interceptions, fautes, minutes, buts encaissés.
+- Nouveaux totaux de saison correspondants, plus clean sheets.
+- Alimentés par les **matchs live** et par les **matchs IA**.
+- La fiche joueur affiche un panneau **STATISTIQUES DÉTAILLÉES** : MJ, buts,
+  passes déc., tirs, cadrés, % cadrés, passes, % passes, tacles, interceptions,
+  fautes, minutes ; pour les gardiens : arrêts, % arrêts, clean sheets, encaissés.
+- Les 5 derniers matchs gagnent un tooltip détaillé (tirs, passes, duels, minutes).
+
+### 5) PRISE EN COMPTE DANS LE MATCH
+- Moteur IA (`match_engine.py`) :
+  - sang-froid : conversion et 10 m ;
+  - régularité + professionnalisme : réduction de la variance de forme ;
+  - activité : attaque/défense et fatigue ;
+  - agressivité : fautes et cartons ;
+  - leadership : poussée dans les fins de match ;
+  - matchs à enjeu : coupes et grands rendez-vous ;
+  - fragilité : risque de blessure ;
+  - notes récentes : la forme du jour tient compte des 3+ dernières notes.
+- Moteur live (`app.py`) : mêmes traits via le profil d'équipe et les effets
+  individuels (tirs, passes, fautes, fatigue, blessures), plus les matchs à enjeu.
+- Les attributs visibles (technique, passe, finition, défense, dribble, vitesse,
+  placement, endurance, gardien) étaient déjà pris en compte ; ils le restent.
+
+### 6) TEST DE RÉGRESSION
+- Nouveau `tests/test_hidden_scouting.py` :
+  1. traits stables, bornés, profil de poste ;
+  2. étoiles et demi-étoiles ;
+  3. fourchette de scouting plus large avec un faible recruteur, exacte à haut niveau ;
+  4. effet mesuré des traits hauts/bas sur les résultats ;
+  5. agressivité cachée -> plus de fautes ;
+  6. stats joueur cohérentes avec les totaux d'équipe ;
+  7. notes récentes -> forme du jour.
+- `tests/test_loan_profiles.py` vérifie que les fiches n'affichent plus de niveau
+  numérique et contiennent les sections Mental caché / Statistiques détaillées.
+- `tests/test_immersion_flow.py` vérifie l'écriture des stats détaillées après un match live.
+- Suite complète : **99 suites PASS, 0 FAIL** ; `RESULT : ALL OK` ;
+  `data/error.log` **0 octet** (503 s).
+- Aucune sauvegarde utilisateur modifiée, aucun `.exe` reconstruit.
+- Capture : `apercu_fiche_scouting.png`, `apercu_fiche_stats.png`,
+  `apercu_scouting_erreur.png` (étoiles, mental caché, stats, erreur de scout).
+

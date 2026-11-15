@@ -17,6 +17,8 @@ import hashlib
 import json
 import random
 
+from game_utils import hidden_attributes_for
+
 TICKS = 120
 SECONDS_PER_TICK = 20
 MATCH_SECONDS = 2400
@@ -61,7 +63,7 @@ def _clamp(value, low, high):
     return max(low, min(high, value))
 
 
-def _team_state(side, profile, lineup, identity, reputation, is_home, rng):
+def _team_state(side, profile, lineup, identity, reputation, is_home, rng, big_match=False):
     """Etat d'une equipe pour le match : niveau, forme du jour, fatigue, mentalite."""
     players = [p for p in (lineup or []) if p]
     field = [p for p in players if str(p.get("position")) != "Gardien"] or players
@@ -74,6 +76,21 @@ def _team_state(side, profile, lineup, identity, reputation, is_home, rng):
     morale = sum(_num(p, "morale", 60) for p in field) / max(1, len(field))
     condition = sum(_num(p, "condition", 70) for p in field) / max(1, len(field))
     stamina = sum(min(_num(p, "stamina", 45), _num(p, "condition", 70)) for p in field) / max(1, len(field))
+    # Traits cachés : moyenne du cinq, jamais affichée en chiffres.
+    # Un profil peut fournir des valeurs explicites (bancs de test, éditeur).
+    try:
+        provided = {key: float(profile[key]) for key in
+                    ("composure", "consistency", "big_matches", "work_rate", "aggression",
+                     "leadership", "professionalism", "injury_proneness", "versatility")}
+    except Exception:
+        provided = None
+    if provided is not None:
+        traits = provided
+    else:
+        hidden = [hidden_attributes_for(p) for p in players]
+        traits = {key: sum(row[key] for row in hidden) / max(1, len(hidden)) for key in
+                  ("composure", "consistency", "big_matches", "work_rate", "aggression",
+                   "leadership", "professionalism", "injury_proneness", "versatility")}
 
     state = {
         "side": side,
@@ -100,6 +117,16 @@ def _team_state(side, profile, lineup, identity, reputation, is_home, rng):
         "morale": morale,
         "condition": condition,
         "stamina": stamina,
+        "composure": traits["composure"],
+        "consistency": traits["consistency"],
+        "big_matches": traits["big_matches"],
+        "work_rate": traits["work_rate"],
+        "aggression": traits["aggression"],
+        "leadership": traits["leadership"],
+        "professionalism": traits["professionalism"],
+        "injury_proneness": traits["injury_proneness"],
+        "versatility": traits["versatility"],
+        "big_match": bool(big_match),
         "fatigue": 0.0,
         "momentum": 0.0,
         "players_on": 5,
@@ -117,14 +144,34 @@ def _team_state(side, profile, lineup, identity, reputation, is_home, rng):
         "cards": [],
         "injuries": [],
         "scorers": {},
+        "player_stats": {},
     }
     # Forme du jour : moral + fraicheur + hasard (une grande equipe peut rater son match).
+    # La regularite et le professionnalisme reduisent l'amplitude du hasard.
+    variance = 0.028 * (1.35 - (traits["consistency"] * 0.55 + traits["professionalism"] * 0.45) / 100.0 * 0.70)
     state["form"] = (1.0 + (morale - 60.0) / 100.0 * 0.045
                      + (condition - 70.0) / 100.0 * 0.045
-                     + rng.uniform(-0.028, 0.028))
+                     + rng.uniform(-variance, variance))
+    # Les statistiques récentes comptent : une série de bonnes notes
+    # (ou de mauvaises) pèse sur la forme du jour, sans écraser le niveau.
+    recent_notes = []
+    for p in players:
+        try:
+            count = int(p.get("season_rating_count", 0) or 0)
+            total = float(p.get("season_rating_sum", 0) or 0)
+            if count >= 3:
+                recent_notes.append(total / count)
+        except Exception:
+            pass
+    if recent_notes:
+        recent_avg = sum(recent_notes) / len(recent_notes)
+        state["form"] *= 1.0 + max(-0.035, min(0.035, (recent_avg - 12.5) * 0.0035))
+    if big_match:
+        state["form"] *= 1.0 + (traits["big_matches"] - 50.0) * 0.0008
     press_fatigue = 1.25 if pressing == "Haut" else 1.0
     tempo_fatigue = 1.18 if tempo == "Rapide" else 0.92 if tempo == "Patient" else 1.0
-    state["fatigue_rate"] = (0.0015 * press_fatigue * tempo_fatigue
+    work_fatigue = 1.0 + (traits["work_rate"] - 50.0) * 0.0035
+    state["fatigue_rate"] = (0.0015 * press_fatigue * tempo_fatigue * work_fatigue
                              * (1.0 + max(0.0, 62.0 - stamina) / 120.0))
     return state
 
@@ -161,6 +208,10 @@ def _attack_score(team, opponent, minute):
     score *= team["form"]
     score *= (1.0 - 0.02 * min(2, len(team["injuries"])))
     score *= (1.0 + 0.05 * team["momentum"])
+    # Traits caches : activite, sang-froid et agressivite pesent sur l'attaque.
+    score *= (1.0 + (team["work_rate"] - 50.0) * 0.0006
+              + (team["composure"] - 50.0) * 0.0004
+              + (team["aggression"] - 50.0) * 0.0002)
     score *= (1.0 + HOME_ATTACK) if team["is_home"] else 1.0
     if team["players_on"] < 5:
         score *= 0.86
@@ -169,7 +220,7 @@ def _attack_score(team, opponent, minute):
     diff = team["goals"] - opponent["goals"]
     push = mental["push"] * 60
     if diff < 0 and remaining <= push:
-        score *= 1.10
+        score *= 1.10 * (1.0 + (team["leadership"] - 50.0) * 0.0010)
     elif diff > 0 and remaining <= push:
         score *= 0.96
     return score
@@ -184,6 +235,9 @@ def _defense_score(team, opponent, minute):
     score *= team["form"]
     score *= (1.0 - 0.025 * min(2, len(team["injuries"])))
     score *= (1.0 - 0.04 * team["momentum"])
+    # Traits caches : l'activite et l'agressivite font defendre plus haut.
+    score *= (1.0 + (team["work_rate"] - 50.0) * 0.0007
+              + (team["aggression"] - 50.0) * 0.0005)
     score *= (1.0 + HOME_DEFENSE) if team["is_home"] else 1.0
     if team["players_on"] < 5:
         score *= 0.82
@@ -273,6 +327,13 @@ def _simulate_match(home, away, rng):
         rival = team_of(other(code))
         rival["momentum"] = _clamp(rival["momentum"] - 0.45, -1.2, 1.2)
 
+    def add_stat(team, player, key, value=1):
+        pid = player.get("id") if player else None
+        if not pid:
+            return
+        row = team["player_stats"].setdefault(pid, {})
+        row[key] = row.get(key, 0) + value
+
     def attempt_pass(attacker, defender):
         pass_edge = ((attacker["passing"] - defender["defense"]) * 0.0022
                      + (0.030 if attacker["style"] == "possession" else 0.0)
@@ -280,10 +341,18 @@ def _simulate_match(home, away, rng):
                      + (0.025 if attacker["players_on"] > defender["players_on"] else 0.0)
                      - 0.06 * attacker["fatigue"])
         completion = _clamp(0.73 + pass_edge, 0.50, 0.93)
+        passer = _pick(attacker["players"], [max(1.0, _num(p, "passing", 45)) for p in attacker["players"]], rng) if attacker["players"] else None
+        if passer is not None:
+            add_stat(attacker, passer, "passes_attempted")
         if rng.random() < completion:
             attacker["build"] = min(6, attacker["build"] + 2)
+            if passer is not None:
+                add_stat(attacker, passer, "passes_completed")
             return True
         defender["possessions_won"] = defender.get("possessions_won", 0) + 1
+        if defender["players"]:
+            hero = _pick(defender["players"], [max(1.0, _num(p, "defense", 45)) for p in defender["players"]], rng)
+            add_stat(defender, hero, "interceptions")
         attacker["build"] = 0
         return False
 
@@ -301,8 +370,10 @@ def _simulate_match(home, away, rng):
                     team["players_on"] = 5
             team["fatigue"] = _clamp(team["fatigue"] + team["fatigue_rate"], 0.0, 1.0)
             team["momentum"] *= 0.975
-            # Blessure en match : rare, aggravee par la fatigue.
-            if team["players"] and rng.random() < 0.0007 * (1.0 + 1.5 * team["fatigue"]):
+            # Blessure en match : rare, aggravee par la fatigue et la fragilite cachee.
+            injury_base = 0.0007 * (1.0 + 1.5 * team["fatigue"])
+            injury_base *= (0.60 + team["injury_proneness"] / 100.0 * 0.90)
+            if team["players"] and rng.random() < injury_base:
                 victim = rng.choice(team["players"])
                 team["injuries"].append({"player": victim, "days": rng.randint(2, 10)})
 
@@ -318,6 +389,8 @@ def _simulate_match(home, away, rng):
         # --- fautes : discipline, pressing, mentalite ---
         foul_p = 0.130 * (1.30 - defender["discipline"]) * (1.28 if defender["pressing"] == "Haut" else 1.0)
         foul_p *= MENTALITY.get(defender["mentality"], MENTALITY["Équilibrée"])["risk"]
+        # L'agressivite cachee augmente le risque de faute (sans etre affichee).
+        foul_p *= (0.70 + defender["aggression"] / 100.0 * 0.60)
         # A partir de la 5e faute de la mi-temps, on defend plus prudemment :
         # les equipes evitent la 6e faute et le 10 m.
         if defender["fouls_half"] >= 5:
@@ -326,9 +399,13 @@ def _simulate_match(home, away, rng):
             defender["fouls_half"] += 1
             defender["fouls"] += 1
             pool = [p for p in defender["players"] if str(p.get("position")) != "Gardien"] or defender["players"]
+            if pool:
+                add_stat(defender, _pick(pool, [1.0] * len(pool), rng), "fouls")
             roll = rng.random()
             yellow_p = 0.28 * referee * (1.20 - defender["discipline"] * 0.40)
+            yellow_p *= (0.80 + defender["aggression"] / 100.0 * 0.40)
             red_p = 0.020 * referee * (1.40 - defender["discipline"])
+            red_p *= (0.80 + defender["aggression"] / 100.0 * 0.40)
             if pool and roll < red_p and defender["players_on"] == 5:
                 player = _pick(pool, [max(1.0, 62.0 - _num(p, "defense", 45)) for p in pool], rng)
                 defender["players_on"] = 4
@@ -345,14 +422,18 @@ def _simulate_match(home, away, rng):
                 dfn = _defense_score(defender, attacker, minute)
                 kicker = _shooter(attacker, rng)
                 conv = _clamp(0.27 + (_num(kicker, "finishing", 45) - defender["keeper"]) * 0.0022
-                              + (atk - dfn) * 0.0010, 0.12, 0.46)
+                              + (atk - dfn) * 0.0010
+                              + (attacker["composure"] - 50.0) * 0.0008, 0.12, 0.46)
                 attacker["shots"] += 1
+                add_stat(attacker, kicker, "shots")
                 if rng.random() < conv:
                     attacker["on_target"] += 1
+                    add_stat(attacker, kicker, "shots_on_target")
                     add_goal(attack_side, minute, "10 m", scorer=kicker)
                 else:
                     if rng.random() < 0.55 and _keeper_of(defender) is not None:
                         attacker["on_target"] += 1
+                        add_stat(attacker, kicker, "shots_on_target")
                         defender["saves"] += 1
                 attacker["build"] = 0
                 side = defend_side
@@ -368,6 +449,8 @@ def _simulate_match(home, away, rng):
                     + 0.020 * attacker["fatigue"])
         if rng.random() < turnover:
             defender["possessions_won"] = defender.get("possessions_won", 0) + 1
+            if defender["players"]:
+                add_stat(defender, _pick(defender["players"], [1.0] * len(defender["players"]), rng), "tackles")
             attacker["build"] = 0
             side = defend_side
             continue
@@ -405,6 +488,7 @@ def _simulate_match(home, away, rng):
         else:
             quality = "speculative"
         shooter = _shooter(attacker, rng)
+        add_stat(attacker, shooter, "shots")
         assist = None
         if rng.random() < 0.60:
             others = [p for p in attacker["players"] if p is not shooter]
@@ -416,10 +500,12 @@ def _simulate_match(home, away, rng):
         goal_kind = None
         if rng.random() < target:
             attacker["on_target"] += 1
+            add_stat(attacker, shooter, "shots_on_target")
             base_conv = {"nette": 0.44, "normale": 0.225, "speculative": 0.075}[quality]
             conv = (base_conv
                     + (_num(shooter, "finishing", 45) - defender["keeper"]) * 0.0018
-                    + (atk - dfn) * 0.0012)
+                    + (atk - dfn) * 0.0012
+                    + (attacker["composure"] - 50.0) * 0.0007)
             conv *= MENTALITY.get(attacker["mentality"], MENTALITY["Équilibrée"])["conv"]
             if attacker["is_home"]:
                 conv += 0.020
@@ -527,10 +613,11 @@ def simulate_other_fixtures(host, conn, matchday, human_opponent_name=None, toda
                           career_timestamp(conn)))
             continue
 
+        cup_match = str(fixture["fixture_type"] if "fixture_type" in fixture.keys() else "championship") == "cup"
         home = _team_state("h", home_data["profile"], home_data["lineup"], home_data["tactics"],
-                           fixture["home_rep"], True, rng)
+                           fixture["home_rep"], True, rng, big_match=cup_match)
         away = _team_state("a", away_data["profile"], away_data["lineup"], away_data["tactics"],
-                           fixture["away_rep"], False, rng)
+                           fixture["away_rep"], False, rng, big_match=cup_match)
         home["team_name"] = club_names.get(home_id, "—")
         away["team_name"] = club_names.get(away_id, "—")
 
@@ -561,6 +648,17 @@ def simulate_other_fixtures(host, conn, matchday, human_opponent_name=None, toda
         for pid, count in result["assists_by_player"].items():
             conn.execute("UPDATE player SET season_assists=season_assists+? WHERE id=?", (int(count), int(pid)))
 
+        for team_data in (home, away):
+            for pid, stats in (team_data.get("player_stats") or {}).items():
+                for source, target in (("shots", "season_shots"), ("shots_on_target", "season_shots_on_target"),
+                                       ("passes_completed", "season_passes_completed"),
+                                       ("passes_attempted", "season_passes_attempted"),
+                                       ("tackles", "season_tackles"), ("interceptions", "season_interceptions"),
+                                       ("fouls", "season_fouls")):
+                    value = int(stats.get(source, 0) or 0)
+                    if value:
+                        conn.execute(f"UPDATE player SET {target}={target}+? WHERE id=?", (value, int(pid)))
+
         home_gk = _keeper_of(home); away_gk = _keeper_of(away)
         if home_gk and int(goals["a"]) > 0:
             conn.execute("UPDATE player SET season_conceded=season_conceded+? WHERE id=?", (int(goals["a"]), int(home_gk["id"])))
@@ -573,7 +671,11 @@ def simulate_other_fixtures(host, conn, matchday, human_opponent_name=None, toda
 
         for team_data in (home, away):
             for player in team_data["players"]:
-                conn.execute("UPDATE player SET season_matches=season_matches+1 WHERE id=?", (int(player["id"]),))
+                conn.execute("UPDATE player SET season_matches=season_matches+1, season_minutes=season_minutes+40 WHERE id=?", (int(player["id"]),))
+
+        for gk, conceded in ((home_gk, int(goals["a"])), (away_gk, int(goals["h"]))):
+            if gk is not None and conceded == 0:
+                conn.execute("UPDATE player SET season_clean_sheets=season_clean_sheets+1 WHERE id=?", (int(gk["id"]),))
 
         # Notes et cartons coherents avec le deroule.
         for code, team_data in (("h", home), ("a", away)):

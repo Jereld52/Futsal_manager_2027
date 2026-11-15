@@ -73,10 +73,24 @@ bouton de sauvegarde crée un point de reprise compacté.
   et copie optionnelle de la sauvegarde active.
 - Les sons sont générés dans `data/audio` ; `FM2027_NO_AUDIO=1` les coupe.
 
+## Scouting, étoiles et attributs cachés
+
+- Le **niveau** et le **potentiel** ne s'affichent plus en chiffres : uniquement
+  en étoiles (demi-étoiles incluses).
+- Les **attributs cachés** (sang-froid, régularité, matchs à enjeu, activité,
+  agressivité, leadership, professionnalisme, fragilité, polyvalence) pèsent
+  sur le moteur : conversion, fautes, fatigue, blessures, forme et grands matchs.
+- Les **recruteurs** estiment le niveau et le potentiel avec une erreur qui
+  dépend de leur niveau, du nombre de rapports et de la connaissance du joueur.
+  Un faible recruteur peut surestimer ou sous-estimer un joueur.
+- Les fiches affichent des **statistiques détaillées** : tirs, tirs cadrés,
+  passes réussies, tacles, interceptions, fautes, minutes, arrêts, clean sheets,
+  pourcentages et note moyenne.
+
 ## Tests
 
 ```text
-python tests\run_tests.py            # suite complète (98 suites)
+python tests\run_tests.py            # suite complète (99 suites)
 python tests\run_tests.py finances   # sous-ensemble par nom
 python tests\global_smoke.py fresh   # parcours complet, univers neuf
 python tests\global_smoke.py save    # idem sur une copie de sauvegarde
