@@ -1,4 +1,4 @@
-# ÉTAT PROJET FM2027V2 — fichier de session (compact)
+﻿# ÉTAT PROJET FM2027V2 — fichier de session (compact)
 
 ## Outils de session — TOUS DANS `C:\FM2027V2\tests\`
 - **`tests\run_tests.py`** = point d'entrée unique des tests courts :
@@ -9955,4 +9955,68 @@ désormais explicitement.
 - Aucune sauvegarde utilisateur modifiée, aucun `.exe` reconstruit.
 - Capture : `apercu_fiche_scouting.png`, `apercu_fiche_stats.png`,
   `apercu_scouting_erreur.png` (étoiles, mental caché, stats, erreur de scout).
+
+
+## Annexe HP - Terrain 2D : fluidité, mouvement réel et synchronisation texte (15/11/2026)
+
+### 1) BOUCLE DE RENDU
+- Passage de ~30 fps à **~60 fps** (`FPS_MS = 16`).
+- Le pas physique utilise un **dt réel** borné (1/120 à 1/30 s) : vitesses,
+  accélérations et freinages ne dépendent plus de la cadence de la machine.
+- Vitesses exprimées **par seconde** : course ~0,46 unité/s, frappe ~1,82,
+  conduite ~0,62. Les animations restent bornées (aucun téléport).
+- Le timer du terrain reste actif pendant le direct, même quand aucun joueur
+  n'a strictement fini sa course : le terrain ne se fige plus.
+
+### 2) MOUVEMENT RÉEL DES JOUEURS
+- Le porteur **progresse vers la cage adverse** balle au pied.
+- Le gardien vit dans sa cage, glisse latéralement avec le ballon et sort
+  légèrement quand son équipe attaque.
+- Le pressing, les appels, le repli et le bloc glissant continuent de suivre
+  les consignes tactiques.
+- **Écartement des pions** : une répulsion douce évite les superpositions
+  (pressing, corner, célébration), sans à-coups.
+- Hystérésis du porteur : le ballon ne saute plus d'un joueur à l'autre à
+  chaque frame.
+- Les acteurs cités par le texte (passeur, tireur, fautif, gardien, corner)
+  convergent vers le ballon et sont entourés d'un halo temporaire.
+
+### 3) FIDÉLITÉ TEXTE -> TERRAIN
+- **Passe** : le receveur nommé est retrouvé et le ballon le suit réellement
+  pendant ~1 s, même après le verrou d'action.
+- **Tir** : le tireur est maintenant transmis au terrain (`detail=shot_name`)
+  et mis en avant ; le ballon part vers la cage.
+- **Arrêt** : correction du côté du gardien (le terrain visait l'équipe
+  adverse) ; le ballon va vers le bon gardien.
+- **Récupération** : correction de la possession (le terrain donnait le ballon
+  à l'adversaire du récupérateur) ; le ballon reste au récupérateur.
+- **Faute** : le fautif cité est transmis et mis en avant.
+- **Corner** : le tireur le plus proche est envoyé au coin et le ballon vise
+  le poteau de corner.
+- **But** : buteur, flash, célébration et ballon au fond des filets restent
+  synchronisés, y compris après le tick suivant.
+
+### 4) HORLOGE FLUIDE
+- Le moteur continue de résoudre un évènement toutes les 20 s simulées, mais
+  l'horloge affichée avance **en continu** entre deux ticks (timer 100 ms).
+- La vitesse de l'horloge suit le réglage 1×..5× et se fige en pause ou pendant
+  un ralenti de but.
+- Le score et les évènements restent la propriété exclusive du moteur : le
+  terrain et l'horloge sont en lecture seule.
+
+### 5) TESTS
+- `tests/test_pitch_flow.py` : pas de saut > 0,05, ballon physique, passe
+  nommée suivie, **turnover rendu au récupérateur**, **arrêt vers le bon
+  gardien**, **tireur nommé mis en avant**.
+- `tests/test_motion_step.py` : 5/5 joueurs bougent, ballon collé au porteur,
+  vitesse plafonnée, verrou de tir respecté.
+- `tests/test_match_pitch2d.py` : déterminisme OFF/ON terrain, robustesse,
+  verrou de tir, célébration qui survit au tick, captures.
+- `tests/test_immersion_flow.py` : parcours complet et stats détaillées.
+- Suite complète : **99 suites PASS, 0 FAIL**, `RESULT : ALL OK`,
+  `data/error.log` **0 octet** (507 s).
+- Capture : `apercu_match_2d.png`.
+- Aucun `.exe` reconstruit, aucune sauvegarde utilisateur modifiée.
+
+
 

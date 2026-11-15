@@ -9859,6 +9859,13 @@ class MainWindow(QMainWindow):
 
         self.timer = QTimer(self); self.timer.timeout.connect(self.advance_minute)
 
+        self._live_clock_timer = QTimer(self)
+        self._live_clock_timer.setInterval(100)
+        self._live_clock_timer.timeout.connect(self._smooth_live_clock)
+        self._clock_anchor_elapsed = 0
+        self._clock_anchor_time = 0.0
+        self._clock_rate = 20.0
+
         self._build_ui()
 
         self._tactics_config_loaded=False
@@ -40157,6 +40164,8 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         self.timer.start(self.match_interval_ms()); self.auto_btn.setText("Ⅱ  PAUSE")
 
+        self._start_live_clock(int(self.match_state.get("elapsed_seconds",0) or 0))
+
         self._set_career_nav_locked(True)
 
 
@@ -40873,6 +40882,8 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
             self.timer.start(self.match_interval_ms()); self.auto_btn.setText("Ⅱ  PAUSE")
 
+            self._start_live_clock(int(self.match_state.get("elapsed_seconds",0) or 0))
+
 
 
     def apply_match_instruction(self):
@@ -41057,7 +41068,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
     def match_interval_ms(self):
 
-        intervals={1:900,2:600,3:400,4:250,5:140}
+        intervals={1:1400,2:900,3:600,4:380,5:220}
 
         return intervals.get(self.match_speed_slider.value() if hasattr(self,"match_speed_slider") else 2,600)
 
@@ -41367,6 +41378,32 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
 
 
+    def _start_live_clock(self, elapsed):
+        """Horloge fluide entre deux ticks de 20 s (le moteur reste seul juge)."""
+        try:
+            self._clock_anchor_elapsed = int(elapsed)
+            self._clock_anchor_time = time.monotonic()
+            interval = max(60, int(self.match_interval_ms()))
+            self._clock_rate = 20.0 / (interval / 1000.0)
+            if not self._live_clock_timer.isActive():
+                self._live_clock_timer.start()
+        except Exception:
+            pass
+
+    def _smooth_live_clock(self):
+        s = getattr(self, "match_state", None)
+        if not s or s.get("finished") or not self.timer.isActive():
+            try: self._live_clock_timer.stop()
+            except Exception: pass
+            return
+        try:
+            elapsed = self._clock_anchor_elapsed + (time.monotonic() - self._clock_anchor_time) * self._clock_rate
+            elapsed = max(self._clock_anchor_elapsed, min(2399, int(elapsed)))
+            self.clock_label.setText(f"{elapsed//60:02d}:{elapsed%60:02d}")
+            self.match_progress.setValue(elapsed)
+        except Exception:
+            pass
+
     def advance_minute(self):
 
         s=self.match_state
@@ -41424,6 +41461,9 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         self.score_label.setText(f"{s['hg']}  —  {s['ag']}")
 
         self.match_progress.setValue(elapsed)
+
+        if not s.get("finished"):
+            self._start_live_clock(elapsed)
 
         # BANDEAU orienté coach : "h" = club du joueur (score et noms dans ce sens).
 
@@ -42003,6 +42043,8 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         self.auto_btn.setText("Ⅱ  PAUSE")
 
         self.timer.start(self.match_interval_ms())
+
+        self._start_live_clock(int(self.match_state.get("elapsed_seconds",0) or 0))
 
         return True
 
@@ -42760,15 +42802,15 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         if chance < shot_probability:
 
-            self.match_banner.animate_action(side,"shot")
+            shot_name,shot_id=self.random_scorer(side)
+
+            self.match_banner.animate_action(side,"shot",detail=shot_name)
 
             if restart:
 
                 self.match_banner.rename_last_action("FRAPPE SUR CORNER" if restart.get("type")=="corner" else "FRAPPE SUR COUP FRANC")
 
             s[f"shots_{side}"]+=1
-
-            shot_name,shot_id=self.random_scorer(side)
 
             if shot_id is not None: s["player_shots"][shot_id]=s["player_shots"].get(shot_id,0)+1
 
@@ -42865,8 +42907,6 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         elif chance < foul_threshold:
 
-            self.match_banner.animate_action(side,"foul")
-
             s[f"fouls_{side}"]+=1
 
             s["fouls_half"][side] += 1
@@ -42875,11 +42915,15 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
             foul_candidates=[p for p in foul_roster if str(p.get("position"))!="Gardien"] or foul_roster
 
+            culprit=None
+
             if foul_candidates:
 
                 culprit=rng.choice(foul_candidates)
 
                 if culprit.get("id") is not None: s["player_fouls"][culprit["id"]]=s["player_fouls"].get(culprit["id"],0)+1
+
+            self.match_banner.animate_action(side,"foul",detail=((culprit.get('first_name','')+' '+culprit.get('last_name','')).strip() if culprit else ""))
 
             fouled_side=other_side
 
@@ -48044,6 +48088,8 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
         self.match_phase.setText("COUP DE SIFFLET FINAL")
 
         self.clock_label.setText("40:00")
+        try: self._live_clock_timer.stop()
+        except Exception: pass
 
         self.match_progress.setValue(2400); self.match_banner.setVisible(False)
 

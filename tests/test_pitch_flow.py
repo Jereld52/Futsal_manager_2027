@@ -76,7 +76,25 @@ target = w._ball["target"]
 receiver = w._entity_by_name("h", "J h2")
 assert receiver is not None
 assert abs(target[0] - (receiver["pos"][0] + 0.045)) < 0.08
+assert w._follow_ent is receiver and w._follow_side == "h"
 print("OK passe nommée : cible vers", receiver["name"])
+
+# Récupération : le texte dit que l'équipe "h" récupère, le terrain doit
+# basculer la possession vers "h" (et non vers l'adversaire).
+w.note_event("h", "turnover", "récupération")
+assert w._possession == "h", w._possession
+print("OK turnover : possession rendue au récupérateur")
+
+# Arrêt : le gardien concerné est celui de l'équipe de l'évènement.
+w.note_event("a", "save", "Arrêt du gardien")
+keeper_a = next(e for e in w._teams["a"] if e.get("gk"))
+assert abs(w._ball["target"][0] - keeper_a["pos"][0]) < 0.06, (w._ball["target"], keeper_a["pos"])
+print("OK arrêt : ballon dirigé vers le bon gardien")
+
+# Tir nommé : le tireur est réellement l'acteur mis en avant.
+w.note_event("h", "shot", "J h2")
+assert w._action_actor and w._action_actor[1] is w._entity_by_name("h", "J h2")
+print("OK tir nommé : acteur = tireur cité")
 
 # Rendu complet sans exception.
 img = w.grab().toImage()

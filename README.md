@@ -73,6 +73,19 @@ bouton de sauvegarde crée un point de reprise compacté.
   et copie optionnelle de la sauvegarde active.
 - Les sons sont générés dans `data/audio` ; `FM2027_NO_AUDIO=1` les coupe.
 
+## Terrain 2D du direct
+
+- Boucle de rendu **~60 fps** avec pas physique temporel : les joueurs courent,
+  accélèrent, freinent et changent de direction sans téléportation.
+- Positionnement vivant : bloc qui glisse avec le ballon, pressing selon la
+  tactique, courses de soutien, gardien qui suit le ballon, écartement des pions.
+- Le terrain suit réellement le texte : passeur → receveur, tireur, gardien qui
+  arrête, fautif, corner, buteur et célébration.
+- Horloge **fluide** entre les ticks du moteur ; les évènements et le score
+  restent décidés par le moteur, le rendu est strictement en lecture seule.
+- Les verrous d'action (tir, arrêt, passe) sont mis à l'échelle de la vitesse
+  de simulation pour que le ballon reste synchrone à 1× comme à 5×.
+
 ## Scouting, étoiles et attributs cachés
 
 - Le **niveau** et le **potentiel** ne s'affichent plus en chiffres : uniquement

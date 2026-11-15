@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """match_pitch2d.py — Terrain de futsal 2D sur le centre de match (niveau 1).
 
 PRINCPE : mouchard, pas acteur. Ce module n'ecrit JAMAIS dans match_state ni
@@ -52,15 +52,21 @@ SLOTS_H = [(0.055, 0.50),                 # gardien
            (0.52, 0.30), (0.52, 0.70)]    # deux attaquants (couloirs larges)
 MARKER_MS = 1600      # duree d'affichage du dernier libelle d'action
 FLASH_MS = 2200       # duree du flash "BUT"
-FPS_MS = 33
+FPS_MS = 16           # ~60 fps : mouvement beaucoup plus fluide
 STEPS = ("1RE", "2E")
-MAX_STEP = 0.0150      # vitesse de course max par frame
+MAX_STEP = 0.0150      # vitesse de course max par frame (compat tests / 30 fps)
+PLAYER_SPEED = 0.46    # unités de terrain par seconde
 BALL_STEP = 0.038     # (heritage) vitesse max du ballon
-BALL_KICK_STEP = 0.060  # vitesse d'une frappe
-BALL_DRIBBLE_STEP = 0.020  # vitesse de conduite de balle
-PLAYER_ACCEL = 0.26   # lissage de la vitesse des joueurs (0..1)
-BALL_ACCEL = 0.34     # lissage de la vitesse du ballon
+BALL_KICK_STEP = 0.060  # vitesse d'une frappe (compat tests)
+BALL_DRIBBLE_STEP = 0.020  # vitesse de conduite de balle (compat tests)
+BALL_KICK_SPEED = 1.82 # unités de terrain par seconde (frappe)
+BALL_DRIBBLE_SPEED = 0.62  # unités de terrain par seconde (conduite)
+PLAYER_ACCEL = 0.26   # compat tests
+BALL_ACCEL = 0.34     # compat tests
+PLAYER_ACCEL_RATE = 9.0   # lissage par seconde
+BALL_ACCEL_RATE = 13.0    # lissage par seconde
 WANDER_A = 0.039      # amplitude du balancement naturel des joueurs
+MAX_FRAME_DT = 0.033  # jamais plus d'une frame de 30 fps dans le pas physique
 
 ACTION_TEXT = {
     "kickoff": "COUP D'ENVOI",
@@ -150,6 +156,15 @@ class Pitch2DWidget(QWidget):
         self._court_cache = None
         self._court_cache_key = None
         self._has_been_visible = False
+        self._last_step_mono = 0.0
+        # Suivi d'action : le ballon reste collé au receveur / au tireur désigné
+        # par le texte, même entre deux ticks du moteur.
+        self._follow_ent = None
+        self._follow_side = None
+        self._follow_until = 0.0
+        self._carrier_hold = {"h": None, "a": None}
+        self._action_actor = None
+        self._action_until = 0.0
 
     # ------------------------------------------------------------ construction
     @staticmethod
@@ -209,6 +224,10 @@ class Pitch2DWidget(QWidget):
             self._last_event_detail = ""
             self._players_on = {"h": 5, "a": 5}
             self._sent_off_slot = {"h": None, "a": None}
+            self._last_step_mono = 0.0
+            self._follow_ent = None; self._follow_side = None; self._follow_until = 0.0
+            self._carrier_hold = {"h": None, "a": None}
+            self._action_actor = None; self._action_until = 0.0
         except Exception:
             pass
 
@@ -312,62 +331,110 @@ class Pitch2DWidget(QWidget):
                 self._score_goal(side, None)
                 self._goal_info = (str(detail or "BUT"), side, now + FLASH_MS / 1000.0 * self._pace_k)
                 self._ball["target"] = (1.004 if attacking else -0.004, 0.5)
-                self._kick_ball(self._ball["target"], BALL_KICK_STEP)
+                self._kick_ball(self._ball["target"], BALL_KICK_SPEED)
                 self._ball_lock_until = now + FLASH_MS / 1000.0 * self._pace_k
                 self._start_celebration(side, now + FLASH_MS / 1000.0 * self._pace_k)
+                self._follow_ent = None; self._follow_side = None; self._follow_until = 0.0
             elif kind == "kickoff":
                 self._ball["target"] = (0.5, 0.5)
                 self._ball["vx"] = self._ball["vy"] = 0.0
                 self._possession = side
                 self._ball_lock_until = now + 0.8 * self._pace_k
+                self._follow_ent = None; self._follow_side = None; self._follow_until = 0.0
             elif kind == "shot":
+                shooter = self._entity_by_name(side, detail) if detail else None
+                if shooter is not None:
+                    self._action_actor = (side, shooter)
+                    self._action_until = now + 1.4 * self._pace_k
                 self._ball["target"] = (1.0 if attacking else 0.0,
                                         0.36 + 0.28 * ((self._carriers.get(side, 1) * 37) % 100) / 100.0)
-                self._kick_ball(self._ball["target"], BALL_KICK_STEP)
+                self._kick_ball(self._ball["target"], BALL_KICK_SPEED)
                 self._ball_lock_until = now + 1.4 * self._pace_k
                 self._wake()
             elif kind == "save":
-                other = "a" if side == "h" else "h"
-                keeper = self._keeper_x(other)
+                keeper_ent = self._keeper_entity(side)
+                keeper = self._keeper_x(side)
+                if keeper_ent is not None:
+                    self._action_actor = (side, keeper_ent)
+                    self._action_until = now + 1.0 * self._pace_k
                 self._ball["target"] = (keeper, 0.5)
-                self._kick_ball(self._ball["target"], BALL_KICK_STEP * 0.7)
+                self._kick_ball(self._ball["target"], BALL_KICK_SPEED * 0.7)
                 self._ball_lock_until = now + 1.0 * self._pace_k
                 self._wake()
             elif kind == "corner":
                 attacking_corner = self._side_attacks_right(side)
                 y = 0.06 if self._carriers.get(side, 1) % 2 else 0.94
+                corner_x = 0.985 if attacking_corner else 0.015
                 self._ball["target"] = (1.0 if attacking_corner else 0.0, y)
-                self._kick_ball(self._ball["target"], BALL_KICK_STEP * 0.55)
+                self._kick_ball(self._ball["target"], BALL_KICK_SPEED * 0.55)
                 self._ball_lock_until = now + 0.9 * self._pace_k
+                taker = None
+                try:
+                    cands=[e for e in (self._teams.get(side) or [])
+                           if e.get("shown") and not e.get("gk")]
+                    if cands:
+                        taker=min(cands,key=lambda e:(e["pos"][0]-corner_x)**2+(e["pos"][1]-y)**2)
+                        taker["target"]=[_clamp01(corner_x + (-0.035 if attacking_corner else 0.035)), _clamp01(y)]
+                        self._action_actor=(side,taker)
+                        self._action_until=now+1.2*self._pace_k
+                except Exception:
+                    taker=None
                 self._wake()
             elif kind == "turnover":
-                other = "a" if side == "h" else "h"
-                self._possession = other
-                self._carriers[other] = self._carriers.get(other, 1) + 1
-                self._aim_carrier(other)
-                self._kick_ball(self._ball["target"], BALL_DRIBBLE_STEP)
-                self._ball_lock_until = now + 0.6 * self._pace_k
+                # L'équipe qui récupère est celle du côté de l'évènement.
+                self._possession = side
+                self._carriers[side] = self._carriers.get(side, 1) + 1
+                self._follow_ent = self._carrier_entity(side)
+                self._follow_side = side
+                self._follow_until = now + 0.7 * self._pace_k
+                self._ball_lock_until = 0.0
+                self._aim_carrier(side)
+                self._kick_ball(self._ball["target"], BALL_DRIBBLE_SPEED)
                 self._wake()
             elif kind in ("pass", "build"):
                 self._possession = side
                 receiver = None
                 if kind == "pass" and "→" in str(detail):
                     receiver = self._entity_by_name(side, str(detail).split("→", 1)[1].strip())
+                elif detail:
+                    receiver = self._entity_by_name(side, detail)
+                self._follow_ent = receiver
+                self._follow_side = side
+                self._follow_until = now + (1.0 if kind == "pass" else 0.65) * self._pace_k
+                if receiver is not None:
+                    self._action_actor = (side, receiver)
+                    self._action_until = now + 1.0 * self._pace_k
                 self._aim_carrier(side, advance=(kind == "pass"), target_ent=receiver)
-                self._kick_ball(self._ball["target"], BALL_DRIBBLE_STEP * 1.15)
-                self._ball_lock_until = now + (0.45 if kind == "pass" else 0.3) * self._pace_k
+                self._kick_ball(self._ball["target"], BALL_DRIBBLE_SPEED * 1.15)
+                self._ball_lock_until = now + (0.55 if kind == "pass" else 0.35) * self._pace_k
+                self._wake()
+            elif kind == "foul":
+                culprit = self._entity_by_name(side, detail) if detail else None
+                if culprit is not None:
+                    self._action_actor = (side, culprit)
+                    self._action_until = now + 0.9 * self._pace_k
                 self._wake()
             else:  # carton, 10 m, temps mort, consigne, remplacement…
+                if detail:
+                    actor = self._entity_by_name(side, detail)
+                    if actor is not None:
+                        self._action_actor = (side, actor)
+                        self._action_until = now + 1.0 * self._pace_k
                 self._wake()
         except Exception:
             pass
 
     def _keeper_x(self, side):
-        team = self._teams.get(side) or []
-        for ent in team:
-            if ent.get("gk") and ent.get("shown"):
-                return _clamp01(ent["pos"][0])
+        ent = self._keeper_entity(side)
+        if ent is not None:
+            return _clamp01(ent["pos"][0])
         return 0.05 if side == "h" else 0.95
+
+    def _keeper_entity(self, side):
+        for ent in self._teams.get(side) or []:
+            if ent.get("gk") and ent.get("shown"):
+                return ent
+        return None
 
     def _start_celebration(self, side, until):
         """Le cinq qui marque file celebrer au coin de la zone adverse."""
@@ -533,10 +600,26 @@ class Pitch2DWidget(QWidget):
             self._timer.stop()
             return
         now = time.monotonic()
+        if self._last_step_mono <= 0:
+            dt = FPS_MS / 1000.0
+        else:
+            dt = now - self._last_step_mono
+        dt = max(1.0 / 120.0, min(MAX_FRAME_DT, dt))
+        self._last_step_mono = now
+        speed_scale = max(0.85, min(1.65, 1.0 / max(0.35, self._pace_k)))
         ball = self._ball
         # --- ballon : conduite sur le porteur, ou trajectoire verrouillee (tir/but/passe)
         locked = now < self._ball_lock_until
-        if not locked and self._possession in ("h", "a"):
+        if not locked and self._follow_ent is not None and now < self._follow_until:
+            try:
+                if self._follow_ent.get("shown"):
+                    follow_side = self._follow_side or self._possession
+                    attacking = self._side_attacks_right(follow_side)
+                    ball["target"] = [_clamp01(self._follow_ent["pos"][0] + (0.045 if attacking else -0.045)),
+                                      _clamp01(self._follow_ent["pos"][1] + 0.025)]
+            except Exception:
+                self._follow_ent = None
+        elif not locked and self._possession in ("h", "a"):
             holder = self._carrier_entity(self._possession)
             if holder:
                 attacking = self._side_attacks_right(self._possession)
@@ -550,26 +633,27 @@ class Pitch2DWidget(QWidget):
         bvx = float(ball.get("vx", 0.0) or 0.0)
         bvy = float(ball.get("vy", 0.0) or 0.0)
         if dist > 0.001:
-            max_speed = BALL_KICK_STEP if locked else BALL_DRIBBLE_STEP
-            want = min(max_speed, dist * 5.0)
+            max_speed = (BALL_KICK_SPEED if locked else BALL_DRIBBLE_SPEED) * speed_scale
+            want = min(max_speed, dist * 8.0)
             tvx, tvy = dx / dist * want, dy / dist * want
         else:
             tvx = tvy = 0.0
-        bvx += (tvx - bvx) * BALL_ACCEL
-        bvy += (tvy - bvy) * BALL_ACCEL
+        baccel = 1.0 - math.exp(-BALL_ACCEL_RATE * dt)
+        bvx += (tvx - bvx) * baccel
+        bvy += (tvy - bvy) * baccel
         if abs(bvx) < 1e-5:
             bvx = 0.0
         if abs(bvy) < 1e-5:
             bvy = 0.0
         if bvx or bvy:
-            bx = _clamp01(bx + bvx)
-            by = _clamp01(by + bvy)
+            bx = _clamp01(bx + bvx * dt)
+            by = _clamp01(by + bvy * dt)
             ball["pos"] = [bx, by]
             ball["vx"], ball["vy"] = bvx, bvy
             all_settled = False
-            if math.hypot(bvx, bvy) > 0.018:
+            if math.hypot(bvx, bvy) > 0.30:
                 self._ball_trail.append((bx, by, now))
-                self._ball_trail = [t for t in self._ball_trail if now - t[2] < 0.45][-10:]
+                self._ball_trail = [t for t in self._ball_trail if now - t[2] < 0.55][-14:]
         if dist > 0.002:
             all_settled = False
         # --- pressing : le defenseur adverse le plus proche du ballon presse
@@ -596,6 +680,12 @@ class Pitch2DWidget(QWidget):
                 _cand.sort(key=lambda t: t[0])
                 pressers = [ent for _, ent in _cand[:n_press]]
         celebrating = self._celebrate and self._celebrate["until"] > now
+        carriers = {}
+        for _s in ("h", "a"):
+            if self._possession == _s and not locked:
+                carriers[_s] = self._carrier_entity(_s)
+            else:
+                carriers[_s] = None
         for side in ("h", "a"):
             is_celebrating = bool(celebrating and self._celebrate["side"] == side)
             has_poss = (self._possession == side) and not locked
@@ -650,7 +740,44 @@ class Pitch2DWidget(QWidget):
                     # balancement naturel perpetuel (jamais statique)
                     gx = _clamp01(gx + WANDER_A * math.sin(now * (0.7 + 0.11 * i) + phase))
                     gy = _clamp01(gy + WANDER_A * math.cos(now * (0.63 + 0.09 * i) + phase * 1.7))
+                # GARDIEN : il vit dans sa cage, glisse latéralement avec le
+                # ballon et sort légèrement quand l'équipe attaque.
+                if ent.get("gk"):
+                    own_goal_x = 0.055 if side == "h" else 0.945
+                    if has_poss:
+                        gx = _clamp01(own_goal_x + (0.035 if side == "h" else -0.035))
+                    else:
+                        gx = _clamp01(own_goal_x + (0.055 if side == "h" else -0.055) * min(1.0, deep * 3.0))
+                    gy = _clamp01(0.5 + (by - 0.5) * 0.38)
+                # ACTEUR DE L'ACTION : le passeur/tireur/fautif cité par le
+                # texte converge réellement vers le ballon au lieu de rester
+                # dans son slot.
+                if (self._action_actor and now < self._action_until
+                        and self._action_actor[0] == side and self._action_actor[1] is ent):
+                    gx = _clamp01(gx + (bx - gx) * 0.42)
+                    gy = _clamp01(gy + (by - gy) * 0.42)
+                # PORTEUR : il progresse vers la cage adverse balle au pied.
+                if has_poss and carriers.get(side) is ent and not ent.get("gk"):
+                    direction = 1.0 if self._side_attacks_right(side) else -1.0
+                    gx = _clamp01(gx + direction * 0.060)
                 pos = ent["pos"]
+                # ÉCARTEMENT : deux pions ne se superposent pas. Une petite
+                # répulsion mutuelle garde le 5v5 lisible même quand plusieurs
+                # joueurs visent le même point (pressing, corner, célébration).
+                try:
+                    for _os in ("h", "a"):
+                        for _other in self._teams[_os]:
+                            if _other is ent or not _other.get("shown"):
+                                continue
+                            _dx = pos[0] - _other["pos"][0]
+                            _dy = pos[1] - _other["pos"][1]
+                            _d = math.hypot(_dx, _dy)
+                            if 0.001 < _d < 0.042:
+                                push = (0.042 - _d) / 0.042 * 0.030
+                                gx = _clamp01(gx + _dx / _d * push)
+                                gy = _clamp01(gy + _dy / _d * push)
+                except Exception:
+                    pass
                 ddx = gx - pos[0]; ddy = gy - pos[1]
                 dist_run = math.hypot(ddx, ddy)
                 vx = float(ent.get("vx", 0.0) or 0.0)
@@ -658,26 +785,27 @@ class Pitch2DWidget(QWidget):
                 # VITESSE DE COURSE : plafond de base + burst de transition
                 # (presseurs et attaquants en possession) ; le preset
                 # "contre" sprinte encore plus fort sur la reprise de balle.
-                mstep = MAX_STEP
+                mstep = PLAYER_SPEED * speed_scale
                 if burst and (ent in pressers or (has_poss and i >= 3)):
                     _tac = self._tactics.get(side) or {}
-                    mstep = MAX_STEP * (1.65 if _tac.get("preset") == "contre" else 1.5)
+                    mstep = PLAYER_SPEED * speed_scale * (1.65 if _tac.get("preset") == "contre" else 1.5)
                 # Steering : accélération et freinage lissés (plus de saut de
                 # direction, la course décrit une courbe naturelle).
                 if dist_run > 0.0015:
-                    want = min(mstep, dist_run * 5.0)
+                    want = min(mstep, dist_run * 6.0)
                     tvx, tvy = ddx / dist_run * want, ddy / dist_run * want
                 else:
                     tvx = tvy = 0.0
-                vx += (tvx - vx) * PLAYER_ACCEL
-                vy += (tvy - vy) * PLAYER_ACCEL
+                paccel = 1.0 - math.exp(-PLAYER_ACCEL_RATE * dt)
+                vx += (tvx - vx) * paccel
+                vy += (tvy - vy) * paccel
                 if abs(vx) < 1e-4:
                     vx = 0.0
                 if abs(vy) < 1e-4:
                     vy = 0.0
                 if vx or vy:
-                    pos[0] = _clamp01(pos[0] + vx)
-                    pos[1] = _clamp01(pos[1] + vy)
+                    pos[0] = _clamp01(pos[0] + vx * dt)
+                    pos[1] = _clamp01(pos[1] + vy * dt)
                     ent["vx"], ent["vy"] = vx, vy
                     all_settled = False
                 elif dist_run > 0.002:
@@ -688,19 +816,31 @@ class Pitch2DWidget(QWidget):
             self._burst = None
         flash_active = (self._goal_flash and self._goal_flash[1] > now) or \
                        (self._last_event and self._last_event[2] > now)
-        if all_settled and not flash_active:
+        if all_settled and not flash_active and self._phase not in ("live", "halft"):
             self._timer.stop()
         self.update()
 
     def _carrier_entity(self, side):
-        """Porteur = joueur de champ le plus proche du ballon (jeu continu)."""
+        """Porteur = joueur de champ le plus proche du ballon (jeu continu).
+
+        Hystérésis : on garde le porteur courant tant qu'un autre joueur n'est
+        pas nettement plus proche, pour éviter que le ballon saute d'un pion à
+        l'autre à chaque frame."""
         team = self._teams.get(side) or []
         shown = [e for e in team if e.get("shown") and not e.get("gk")]
         order = shown or [e for e in team if e.get("shown")]
         if not order:
             return None
         bx, by = self._ball["pos"]
-        return min(order, key=lambda e: (e["pos"][0] - bx) ** 2 + (e["pos"][1] - by) ** 2)
+        def dist(ent):
+            return (ent["pos"][0] - bx) ** 2 + (ent["pos"][1] - by) ** 2
+        nearest = min(order, key=dist)
+        hold = (self._carrier_hold.get(side) if isinstance(getattr(self, "_carrier_hold", None), dict) else None)
+        if (hold is not None and hold.get("shown") and hold in order
+                and dist(hold) <= dist(nearest) + 0.0075):
+            return hold
+        self._carrier_hold[side] = nearest
+        return nearest
 
     def _entity_by_name(self, side, text):
         """Retrouve le pion nommé dans un détail de passe (« X → Y »)."""
@@ -816,6 +956,16 @@ class Pitch2DWidget(QWidget):
                     continue
                 x = rect.left() + ent["pos"][0] * rect.width()
                 y = rect.top() + ent["pos"][1] * rect.height()
+                # Halo sur l'acteur cité par le texte (passeur, tireur, fautif).
+                try:
+                    if (self._action_actor and time.monotonic() < self._action_until
+                            and self._action_actor[1] is ent):
+                        glow = QColor(self._colors[side]); glow.setAlpha(90)
+                        painter.setBrush(Qt.NoBrush)
+                        painter.setPen(QPen(glow, max(2.0, radius / 3.5)))
+                        painter.drawEllipse(QPointF(x, y), radius * 1.75, radius * 1.75)
+                except Exception:
+                    pass
                 alpha = int(255 * (0.35 + 0.65 * ent.get("alpha", 1.0)))
                 fill = QColor(color)
                 fill.setAlpha(alpha)
@@ -1180,3 +1330,4 @@ class MatchPlayButton(QPushButton):
                 self.setStyleSheet(self.STYLES["neutral"])
         except Exception:
             pass
+
