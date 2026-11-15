@@ -89,7 +89,8 @@ bouton de sauvegarde crée un point de reprise compacté.
 - Les **attributs des joueurs** comptent dans le 2D : vitesse, accélération,
   passe, dribble, placement et traits cachés influencent courses et choix de passe.
 - **1× = temps réel strict** (20 s réelles par tranche de 20 s simulées, match
-  complet en ~40 min) ; 2× à 5× accélèrent sans casser les mouvements.
+  complet en ~40 min) ; 2× à 8× accélèrent jusqu'au mode express pour les tests
+  et les matchs rapides.
 - Horloge **fluide** entre les ticks du moteur ; les évènements et le score
   restent décidés par le moteur, le rendu est strictement en lecture seule.
 - Entre deux actions, une circulation de balle visuelle garde le match vivant.
@@ -113,7 +114,7 @@ bouton de sauvegarde crée un point de reprise compacté.
 ## Tests
 
 ```text
-python tests\run_tests.py            # suite complète (100 suites)
+python tests\run_tests.py            # suite complète (101 suites)
 python tests\run_tests.py finances   # sous-ensemble par nom
 python tests\global_smoke.py fresh   # parcours complet, univers neuf
 python tests\global_smoke.py save    # idem sur une copie de sauvegarde

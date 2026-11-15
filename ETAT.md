@@ -10144,3 +10144,49 @@ Nouveau `tests/test_pitch_tactics.py` :
 - `data/error.log` : **0 octet**.
 - Aucune sauvegarde utilisateur modifiée, aucun `.exe` reconstruit.
 
+
+## Annexe HS - Démarrage, vitesse, buts et fluidité du direct (15/11/2026)
+
+### 1) DÉMARRAGE
+- Les images d'ouverture sont **dédupliquées par nom** : `data/jgames.png` et
+  `assets/jgames.png` ne produisent plus deux écrans identiques.
+- Chaque écran d'ouverture avance **automatiquement après 1,4 s** ; un clic
+  permet toujours de passer immédiatement.
+- Le libellé devient **CLIQUEZ POUR PASSER**.
+
+### 2) VITESSE
+- Le sélecteur passe de 5 à **8 vitesses** :
+  - 1× temps réel strict (~40 min) ;
+  - 2× ~20 min, 3× ~10 min, 4× ~4 min, 5× ~2 min ;
+  - 6× ~72 s, 7× ~36 s, 8× ~12 s.
+- L'horloge fluide suit la vitesse choisie ; elle est exacte à 1× (1 s de match
+  par seconde réelle).
+- Les animations et verrous de balle sont mis à l'échelle pour rester lisibles
+  même à 8×.
+
+### 3) BUTS / GARDIEN
+- Un tir ne vise plus directement le fond du filet : le ballon s'arrête avant
+  la ligne tant qu'aucun évènement `goal` n'a été émis.
+- Nouvel évènement visuel **`shot_miss`** : un tir à côté sort réellement à côté
+  du but, il ne traverse plus la ligne comme un but.
+- Un **arrêt** dirige le ballon vers le gardien concerné et le verrouille
+  brièvement ; le gardien ne « laisse plus passer » un ballon qui n'est pas but.
+- Seul un évènement `goal` autorise le ballon à franchir la ligne (clamp
+  spécifique), avec flash et célébration.
+
+### 4) FLUIDITÉ
+- Rendu 60 fps, pas physique en dt réel, interpolation des vitesses.
+- Circulation visuelle de balle entre les ticks, phases de construction,
+  lecture des tactiques et attributs (annexe HR).
+- Le terrain ne bloque jamais le moteur : toute la couche 2D reste en lecture
+  seule.
+
+### 5) TESTS
+- `tests/test_splash_startup.py` : déduplication des logos + auto-avance.
+- `tests/test_pitch_flow.py` : tir à côté hors cadre, but autorisé, arrêt,
+  turnover, passe nommée.
+- `tests/test_immersion_flow.py` : 1× = 20 000 ms, horloge 1 s/s, maximum 8×.
+- Suite complète : **101 suites PASS, 0 FAIL**, `RESULT : ALL OK`.
+- `data/error.log` : **0 octet**.
+- Aucun `.exe` reconstruit, aucune sauvegarde utilisateur modifiée.
+

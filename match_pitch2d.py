@@ -381,6 +381,15 @@ class Pitch2DWidget(QWidget):
                 self._ball["target"] = (keeper, 0.5)
                 self._kick_ball(self._ball["target"], BALL_KICK_SPEED * 0.7)
                 self._ball_lock_until = now + 1.0 * self._pace_k
+                self._set_piece_until = now + 1.1 * self._pace_k
+                self._wake()
+            elif kind == "shot_miss":
+                attacking_miss = self._side_attacks_right(side)
+                y = 0.10 if (self._carriers.get(side, 1) % 2) else 0.90
+                self._ball["target"] = (1.02 if attacking_miss else -0.02, y)
+                self._kick_ball(self._ball["target"], BALL_KICK_SPEED * 0.82)
+                self._ball_lock_until = now + 1.05 * self._pace_k
+                self._set_piece_until = now + 1.1 * self._pace_k
                 self._wake()
             elif kind == "corner":
                 attacking_corner = self._side_attacks_right(side)
@@ -804,8 +813,13 @@ class Pitch2DWidget(QWidget):
         if abs(bvy) < 1e-5:
             bvy = 0.0
         if bvx or bvy:
-            bx = _clamp01(bx + bvx * dt)
+            bx = bx + bvx * dt
             by = _clamp01(by + bvy * dt)
+            goal_live = bool(self._goal_flash and self._goal_flash[1] > now)
+            if goal_live:
+                bx = max(-0.02, min(1.02, bx))
+            else:
+                bx = max(0.006, min(0.994, bx))
             ball["pos"] = [bx, by]
             ball["vx"], ball["vy"] = bvx, bvy
             all_settled = False

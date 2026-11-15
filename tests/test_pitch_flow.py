@@ -96,6 +96,18 @@ w.note_event("h", "shot", "J h2")
 assert w._action_actor and w._action_actor[1] is w._entity_by_name("h", "J h2")
 print("OK tir nommé : acteur = tireur cité")
 
+# Tir à côté : le ballon sort à côté, il ne doit jamais franchir la ligne.
+w.note_event("h", "shot_miss", "J h2")
+for _ in range(30): w._step()
+assert w._ball["pos"][0] <= 0.995, w._ball["pos"]
+print("OK tir à côté : ballon hors cadre, jamais dans le but")
+
+# But : seul l'évènement goal autorise le ballon à franchir la ligne.
+w.note_event("h", "goal", "J h2")
+for _ in range(30): w._step()
+assert w._ball["pos"][0] > 0.99, w._ball["pos"]
+print("OK but : ballon au fond des filets")
+
 # Rendu complet sans exception.
 img = w.grab().toImage()
 assert not img.isNull()

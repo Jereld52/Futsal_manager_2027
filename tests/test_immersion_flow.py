@@ -53,6 +53,9 @@ try:
     assert w.timer.isActive()
     assert w.match_interval_ms() == 20000, w.match_interval_ms()
     w._start_live_clock(0); assert abs(w._clock_rate - 1.0) < 1e-6, w._clock_rate
+    assert w.match_speed_slider.maximum() == 8
+    w.match_speed_slider.setValue(8); assert w.match_interval_ms() == 100
+    w.match_speed_slider.setValue(1)
     w.timer.stop()
     assert "La salle explose" not in w.commentary_label.text()  # pas encore de but
     assert w.commentary_log.toPlainText().strip(), "commentaire de coup d'envoi absent"

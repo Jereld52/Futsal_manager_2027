@@ -9730,7 +9730,9 @@ class SplashWindow(QWidget):
         self.anim=QPropertyAnimation(self.effect, b"opacity", self)
         self.anim.setDuration(420); self.anim.setEasingCurve(QEasingCurve.InOutCubic)
         self.anim.finished.connect(self._fade_done)
-        self.hint=QLabel("CLIQUEZ POUR CONTINUER", self)
+        self._auto_timer=QTimer(self); self._auto_timer.setSingleShot(True)
+        self._auto_timer.timeout.connect(self.advance)
+        self.hint=QLabel("CLIQUEZ POUR PASSER", self)
         self.hint.setAlignment(Qt.AlignCenter)
         self.hint.setStyleSheet("font-size:8pt;font-weight:900;letter-spacing:3px;color:#b9c8d8;background:transparent;")
         screen=QApplication.primaryScreen()
@@ -9776,6 +9778,8 @@ class SplashWindow(QWidget):
 
     def advance(self):
         if self._busy or self._current is None or self._closing: return
+        try: self._auto_timer.stop()
+        except Exception: pass
         if self._index>=len(self._paths)-1:
             self._closing=True; self._fade(0.0)
         else:
@@ -9783,6 +9787,8 @@ class SplashWindow(QWidget):
 
     def skip(self):
         if self._emitted: return
+        try: self._auto_timer.stop()
+        except Exception: pass
         self._closing=True
         if self._current is None:
             self._finish(); return
@@ -9809,10 +9815,17 @@ class SplashWindow(QWidget):
         if self._closing:
             self._finish(); return
         if self._pending:
-            self._pending=False; self._index+=1; self._load_current()
+            self._pending=False; self._index+=1; self._load_current(); return
+        try:
+            if self.effect.opacity()>0.99:
+                self._auto_timer.start(1400)
+        except Exception:
+            pass
 
     def _finish(self):
         if self._emitted: return
+        try: self._auto_timer.stop()
+        except Exception: pass
         self._emitted=True
         self.finished.emit()
         self.close()
@@ -17050,11 +17063,11 @@ class MainWindow(QMainWindow):
 
         grp_speed,row_speed=_group("VITESSE","#c4b5fd")
 
-        self.match_speed_slider=QSlider(Qt.Horizontal); self.match_speed_slider.setRange(1,5); self.match_speed_slider.setValue(1); self.match_speed_slider.setVisible(False); self.match_speed_slider.setEnabled(False)
+        self.match_speed_slider=QSlider(Qt.Horizontal); self.match_speed_slider.setRange(1,8); self.match_speed_slider.setValue(1); self.match_speed_slider.setVisible(False); self.match_speed_slider.setEnabled(False)
 
         self.match_speed_buttons=QButtonGroup(self); self.match_speed_buttons.setExclusive(True)
 
-        for _v in range(1,6):
+        for _v in range(1,9):
 
             _b=QToolButton(); _b.setText("%d\u00d7"%_v); _b.setCheckable(True); _b.setChecked(_v==1); _b.setEnabled(False); _b.setObjectName("SegSpeed")
 
@@ -41193,7 +41206,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
     def match_interval_ms(self):
 
-        intervals={1:20000,2:10000,3:5000,4:2000,5:1000}
+        intervals={1:20000,2:10000,3:5000,4:2000,5:1000,6:600,7:300,8:100}
 
         return intervals.get(self.match_speed_slider.value() if hasattr(self,"match_speed_slider") else 2,600)
 
@@ -41231,7 +41244,7 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
         value=int(value)
 
-        labels={1:"1×  •  TEMPS RÉEL",2:"2×  •  RAPIDE",3:"3×  •  TRÈS RAPIDE",4:"4×  •  ACCÉLÉRÉ",5:"5×  •  TURBO"}
+        labels={1:"1×  •  TEMPS RÉEL",2:"2×  •  RAPIDE",3:"3×  •  TRÈS RAPIDE",4:"4×  •  ACCÉLÉRÉ",5:"5×  •  TURBO",6:"6×  •  EXPRESS",7:"7×  •  HYPER",8:"8×  •  INSTANT"}
 
         self.match_speed_label.setText(labels.get(value,f"{value}×"))
 
@@ -43028,6 +43041,8 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
 
                     s["possession_side"]=other_side; s["possession_ticks"]=0; s["build_up"]={"h":0,"a":0}; s["set_piece"]=None
 
+                    self.match_banner.animate_action(side,"shot_miss",detail=shot_name)
+
                     self.log_match_event(f"{stamp} — Tentative de {prefix}, le ballon passe à côté. Remise en jeu pour {s['home'] if other_side=='h' else s['away']}.","shot",minute)
 
         elif chance < foul_threshold:
@@ -43182,6 +43197,8 @@ QHeaderView::section{background:#142030;color:#a9bdd4;font-weight:900;font-size:
                     self.log_match_event(f"<span style='color:#8fe0a3'><b>{stamp} — BUT sur 10 m !</b></span> • {scorer}","goal",minute)
 
                 else:
+
+                    self.match_banner.animate_action(other,"shot_miss")
 
                     s["possession_side"]=side; s["possession_ticks"]=0; s["build_up"]={"h":0,"a":0}; s["set_piece"]=None
 
@@ -48334,6 +48351,16 @@ def install_crash_reporter():
         sys.__excepthook__(exc_type,exc_value,tb)
     sys.excepthook=_hook
 
+def unique_splash_paths(paths):
+    """Une seule image d'ouverture par nom de fichier (data/ + assets/)."""
+    seen=set(); out=[]
+    for path in (paths or []):
+        key=os.path.basename(str(path)).lower()
+        if key in seen: continue
+        seen.add(key); out.append(path)
+    return out
+
+
 def main():
 
     global DB_PATH
@@ -48399,6 +48426,9 @@ def main():
     splash_paths=[os.path.join(DATA_DIR,"jgames.png"),os.path.join(ASSET_DIR,"jgames.png"),
               os.path.join(DATA_DIR,"intro1.png"),os.path.join(ASSET_DIR,"intro1.png")]
     splash_paths=[path for path in splash_paths if os.path.exists(path)]
+    # Évite de montrer deux fois le même logo quand data/ et assets/ contiennent
+    # le même fichier : un seul écran par image distincte.
+    splash_paths=unique_splash_paths(splash_paths)
     if splash_paths:
         app.setQuitOnLastWindowClosed(False)
         splash=SplashWindow(splash_paths)
@@ -48422,4 +48452,5 @@ def main():
 if __name__=="__main__":
 
     main()
+
 
