@@ -44,8 +44,9 @@ assert not any("SAISON" in t for t in texts), texts
 assert tabs.currentIndex() == 0 and "EFFECTIF" in tabs.tabText(0)
 roster = dlg.findChild(QListWidget, "ClubRosterCards")
 assert roster.count() >= 10, roster.count()
-stats = [l.text() for l in dlg.findChildren(QLabel) if "NIVEAU MOYEN" in l.text()]
-assert stats and "MASSE" in stats[0] and "FINS DE CONTRAT" in stats[0], stats
+stats = [l.text() for l in dlg.findChildren(QLabel) if l.text()]
+joined=" ".join(stats)
+assert "NIVEAU MOYEN" in joined and "MASSE" in joined and "FINS DE CONTRAT" in joined, stats[:12]
 recent = None
 for t in dlg.findChildren(QTableWidget):
     if t.columnCount() == 5 and t.horizontalHeaderItem(2) and t.horizontalHeaderItem(2).text() == "DOMICILE":

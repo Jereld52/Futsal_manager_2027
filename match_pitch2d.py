@@ -18,6 +18,7 @@ Robustesse :
     (entite non arrivee a sa cible / flash actif), arrete sinon.
 """
 import math
+import random
 import sys
 import time
 from PySide6.QtCore import QTimer, Qt, QPointF, QRectF
@@ -163,6 +164,8 @@ class Pitch2DWidget(QWidget):
         self._follow_side = None
         self._follow_until = 0.0
         self._carrier_hold = {"h": None, "a": None}
+        self._visual_next = 0.0
+        self._visual_rng = random.Random(2027)
         self._action_actor = None
         self._action_until = 0.0
 
@@ -227,6 +230,8 @@ class Pitch2DWidget(QWidget):
             self._last_step_mono = 0.0
             self._follow_ent = None; self._follow_side = None; self._follow_until = 0.0
             self._carrier_hold = {"h": None, "a": None}
+            self._visual_next = 0.0
+            self._visual_rng = random.Random(2027)
             self._action_actor = None; self._action_until = 0.0
         except Exception:
             pass
@@ -413,6 +418,7 @@ class Pitch2DWidget(QWidget):
                 if culprit is not None:
                     self._action_actor = (side, culprit)
                     self._action_until = now + 0.9 * self._pace_k
+                self._ball_lock_until = now + 0.8 * self._pace_k
                 self._wake()
             else:  # carton, 10 m, temps mort, consigne, remplacement…
                 if detail:
@@ -420,6 +426,8 @@ class Pitch2DWidget(QWidget):
                     if actor is not None:
                         self._action_actor = (side, actor)
                         self._action_until = now + 1.0 * self._pace_k
+                if kind in ("yellow_card", "red", "timeout", "substitution", "ten_metre"):
+                    self._ball_lock_until = now + 0.8 * self._pace_k
                 self._wake()
         except Exception:
             pass
@@ -554,6 +562,33 @@ class Pitch2DWidget(QWidget):
         self._ball["target"] = (_clamp01(holder["pos"][0] + lead),
                                 _clamp01(holder["pos"][1] + 0.02))
 
+    def _visual_circulate(self, side, now):
+        """Petite circulation de balle purement visuelle entre deux actions du
+        moteur : le match reste vivant pendant les 20 s réelles d'un tick."""
+        try:
+            team=[e for e in (self._teams.get(side) or []) if e.get("shown") and not e.get("gk")]
+            if len(team)<2:
+                return
+            carrier=self._carrier_entity(side)
+            cands=[e for e in team if e is not carrier]
+            if not cands:
+                return
+            attack_right=self._side_attacks_right(side)
+            # préfère un joueur légèrement en avant pour donner une impression de construction
+            cands.sort(key=lambda e: (e["pos"][0] if attack_right else -e["pos"][0]))
+            receiver=self._visual_rng.choice(cands[:max(1,min(3,len(cands)))])
+            lead=0.045 if attack_right else -0.045
+            target=[_clamp01(receiver["pos"][0]+lead), _clamp01(receiver["pos"][1]+0.02)]
+            self._follow_ent=receiver; self._follow_side=side
+            self._follow_until=now+1.5
+            self._carrier_hold[side]=receiver
+            self._ball_lock_until=0.0
+            self._ball["target"]=target
+            self._kick_ball(target, BALL_DRIBBLE_SPEED * 1.20)
+            self._visual_next=now+self._visual_rng.uniform(2.4,4.8)
+        except Exception:
+            pass
+
     def _kick_ball(self, target, speed):
         """Impulsion : le ballon part vraiment vers sa cible (passe, tir, but)."""
         try:
@@ -610,6 +645,9 @@ class Pitch2DWidget(QWidget):
         ball = self._ball
         # --- ballon : conduite sur le porteur, ou trajectoire verrouillee (tir/but/passe)
         locked = now < self._ball_lock_until
+        if (self._phase == "live" and not locked and self._possession in ("h", "a")
+                and now >= self._visual_next and now >= self._follow_until):
+            self._visual_circulate(self._possession, now)
         if not locked and self._follow_ent is not None and now < self._follow_until:
             try:
                 if self._follow_ent.get("shown"):

@@ -4,12 +4,125 @@ Ce module contient les widgets dessinés en Qt qui ne portent pas la logique mé
 """
 import re
 import unicodedata
+import math
 
 from PySide6.QtCore import Qt, QTimer, QPointF, QRectF, QSize, Signal, QMimeData
 from PySide6.QtGui import QFont, QPainter, QColor, QPen, QLinearGradient, QRadialGradient, QPolygonF, QPainterPath, QBrush, QFontMetrics, QDrag, QIcon, QPixmap, QPalette
 from PySide6.QtWidgets import *
 
 from help_content import HELP_THEMES, HELP_TOPICS, THEME_INDEX, TOPIC_INDEX
+
+
+_STAR_CACHE = {}
+
+
+def _star_path(cx, cy, radius):
+    """Étoile à cinq branches, dessinée en vectoriel (jamais un caractère)."""
+    path = QPainterPath()
+    for index in range(10):
+        angle = -math.pi / 2.0 + index * math.pi / 5.0
+        r = radius if index % 2 == 0 else radius * 0.44
+        x = cx + math.cos(angle) * r
+        y = cy + math.sin(angle) * r
+        if index == 0:
+            path.moveTo(x, y)
+        else:
+            path.lineTo(x, y)
+    path.closeSubpath()
+    return path
+
+
+def star_pixmap(stars, size=12, color="#ffd166", empty="#35425c",
+                unknown=False, uncertain=False, gap=3):
+    """5 étoiles vectorielles, avec demi-étoiles réellement dessinées.
+
+    `stars` va de 0 à 5 (0,5 accepté). Aucun caractère ★/☆/½ n'est utilisé :
+    le rendu est identique sur toutes les plateformes et à toutes les tailles.
+    """
+    try:
+        value = max(0.0, min(5.0, float(stars)))
+    except (TypeError, ValueError):
+        value = 0.0
+    size = max(7, int(size)); gap = max(1, int(gap))
+    key = (round(value * 2) / 2.0, size, str(color), str(empty), bool(unknown), bool(uncertain), gap)
+    hit = _STAR_CACHE.get(key)
+    if hit is not None:
+        return hit
+    width = int(5 * size + 4 * gap)
+    pix = QPixmap(width, size)
+    pix.fill(Qt.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.Antialiasing, True)
+    full = QColor(color); full_border = full.darker(135)
+    hollow = QColor(empty)
+    for index in range(5):
+        cx = index * (size + gap) + size / 2.0
+        cy = size / 2.0
+        radius = size * 0.46
+        path = _star_path(cx, cy, radius)
+        ratio = max(0.0, min(1.0, value - index))
+        if unknown:
+            painter.setBrush(Qt.NoBrush)
+            pen = QPen(hollow, max(1.0, size / 10.0)); pen.setStyle(Qt.DashLine)
+            painter.setPen(pen)
+            painter.drawPath(path)
+            continue
+        # étoile vide
+        painter.setBrush(Qt.NoBrush)
+        painter.setPen(QPen(hollow, max(1.0, size / 11.0)))
+        painter.drawPath(path)
+        if ratio >= 0.999:
+            painter.setBrush(QBrush(full)); painter.setPen(QPen(full_border, max(1.0, size / 12.0)))
+            painter.drawPath(path)
+        elif ratio >= 0.45:
+            # demi-étoile : on remplit la moitié gauche du chemin
+            painter.save()
+            painter.setClipRect(QRectF(cx - radius, cy - radius, radius, radius * 2.0))
+            painter.setBrush(QBrush(full)); painter.setPen(Qt.NoPen)
+            painter.drawPath(path)
+            painter.restore()
+            painter.setBrush(Qt.NoBrush); painter.setPen(QPen(full_border, max(1.0, size / 13.0)))
+            painter.drawPath(path)
+    if uncertain and not unknown:
+        dot = QColor(color); dot.setAlpha(150)
+        painter.setPen(Qt.NoPen); painter.setBrush(dot)
+        painter.drawEllipse(QPointF(width - 2.0, size - 2.0), max(1.2, size * 0.10), max(1.2, size * 0.10))
+    painter.end()
+    if len(_STAR_CACHE) > 600:
+        _STAR_CACHE.clear()
+    _STAR_CACHE[key] = pix
+    return pix
+
+
+class StarRatingWidget(QWidget):
+    """Affichage d'une note en étoiles vectorielles (pleines / demi / vides)."""
+
+    def __init__(self, stars=0.0, size=14, color="#ffd166", empty="#35425c",
+                 unknown=False, uncertain=False, parent=None):
+        super().__init__(parent)
+        self._stars = stars; self._size = size; self._color = color
+        self._empty = empty; self._unknown = unknown; self._uncertain = uncertain
+        self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.setMinimumSize(self.sizeHint())
+
+    def set_stars(self, stars, unknown=False, uncertain=False, color=None):
+        self._stars = stars; self._unknown = unknown; self._uncertain = uncertain
+        if color: self._color = color
+        self.updateGeometry(); self.update()
+
+    def sizeHint(self):
+        gap = 3
+        return QSize(int(5 * self._size + 4 * gap), int(self._size))
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        pix = star_pixmap(self._stars, self._size, self._color, self._empty,
+                          self._unknown, self._uncertain, gap=3)
+        y = (self.height() - pix.height()) // 2
+        painter.drawPixmap(0, max(0, y), pix)
+        painter.end()
+
 
 class ClubIdentityPreview(QFrame):
     """Aperçu d'identité soigné : fond stade, écusson héraldique, maillot aux

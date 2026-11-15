@@ -10014,9 +10014,72 @@ désormais explicitement.
   verrou de tir, célébration qui survit au tick, captures.
 - `tests/test_immersion_flow.py` : parcours complet et stats détaillées.
 - Suite complète : **99 suites PASS, 0 FAIL**, `RESULT : ALL OK`,
-  `data/error.log` **0 octet** (507 s).
+  `data/error.log` **0 octet** (509 s).
 - Capture : `apercu_match_2d.png`.
 - Aucun `.exe` reconstruit, aucune sauvegarde utilisateur modifiée.
 
+
+
+
+## Annexe HQ - Étoiles vectorielles, temps réel strict et 2D vivant (15/11/2026)
+
+### 1) ÉTOILES VISUELLES
+- Nouveau rendu vectoriel `star_pixmap()` / `StarRatingWidget` dans
+  `ui_components.py` : les étoiles sont dessinées par `QPainter`, plus jamais
+  écrites avec les caractères `★`, `☆` ou `½`.
+- Les demi-étoiles sont réellement remplies à moitié (clip vectoriel), pas
+  affichées comme du texte.
+- Remplacement dans les écrans principaux :
+  - fiche joueur (niveau + potentiel) ;
+  - marché (colonnes NIV. / POT.) ;
+  - effectif (tableau et cartes de club) ;
+  - académie (jeunes et promotions) ;
+  - prêts (entrants/sortants) ;
+  - formation (cartes de progression) ;
+  - carrière (niveau par saison) ;
+  - fiche express, aperçu banc, fiches de contrat.
+- Les notes de performance restent numériques (`/20`) : ce ne sont pas le
+  niveau ou le potentiel du joueur.
+- Les tooltips et messages ne contiennent plus de séries d'étoiles écrites :
+  ils renvoient vers l'affichage visuel.
+
+### 2) TEMPS RÉEL STRICT
+- Nouveau barème de vitesse :
+  - **1× = temps réel strict** : 20 s réelles par tranche de 20 s simulées,
+    soit ~40 minutes pour un match ;
+  - 2× = ~20 min, 3× = ~10 min, 4× = ~4 min, 5× = ~2 min.
+- L'horloge est **fluide** (timer 100 ms) et avance à 1 seconde de match par
+  seconde réelle en 1× ; elle se fige en pause et pendant un ralenti de but.
+- Le moteur reste autoritaire : les évènements et le score sont toujours
+  décidés par `simulate_event`, le terrain ne fait que les représenter.
+
+### 3) TERRAIN 2D EN TEMPS RÉEL
+- Rendu **~60 fps**, pas physique en dt réel (1/120 à 1/30 s).
+- Mouvement continu : porteur qui progresse, gardien qui glisse, pressing,
+  repli, appels, écartement des pions, halo de l'acteur cité.
+- **Circulation de balle visuelle** entre deux ticks : toutes les 2,4 à 4,8 s
+  réelles, une passe courte est jouée entre coéquipiers pour garder le match
+  vivant, sans modifier le score, les stats ni le texte.
+- Synchronisation texte -> terrain :
+  - passeur/receveur suivis ;
+  - tireur mis en avant ;
+  - arrêt dirigé vers le bon gardien ;
+  - récupération rendue au récupérateur ;
+  - fautif, corner, buteur et célébration cohérents.
+- Le verrou de balle et les durées d'animation suivent la vitesse choisie.
+
+### 4) VALIDATION
+- `tests/test_loan_profiles.py` vérifie la présence des **widgets d'étoiles**
+  et l'absence de niveau numérique.
+- `tests/test_immersion_flow.py` vérifie le mode **1× temps réel** (20 000 ms)
+  et une horloge à 1,0 seconde de match par seconde réelle.
+- `tests/test_pitch_flow.py` vérifie passe nommée, turnover, arrêt et tireur.
+- `tests/test_pitch_flow.py` / `test_motion_step.py` / `test_match_pitch2d.py`
+  couvrent mouvement, vitesse bornée, déterminisme et robustesse.
+- Suite complète : **99 suites PASS, 0 FAIL**, `RESULT : ALL OK`,
+  `data/error.log` **0 octet**.
+- Captures : `apercu_fiche_stats.png`, `apercu_marche_etoiles.png`,
+  `apercu_match_2d.png`.
+- Aucun `.exe` reconstruit, aucune sauvegarde utilisateur modifiée.
 
 

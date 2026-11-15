@@ -81,10 +81,13 @@ bouton de sauvegarde crée un point de reprise compacté.
   tactique, courses de soutien, gardien qui suit le ballon, écartement des pions.
 - Le terrain suit réellement le texte : passeur → receveur, tireur, gardien qui
   arrête, fautif, corner, buteur et célébration.
+- **1× = temps réel strict** (20 s réelles par tranche de 20 s simulées, match
+  complet en ~40 min) ; 2× à 5× accélèrent sans casser les mouvements.
 - Horloge **fluide** entre les ticks du moteur ; les évènements et le score
   restent décidés par le moteur, le rendu est strictement en lecture seule.
-- Les verrous d'action (tir, arrêt, passe) sont mis à l'échelle de la vitesse
-  de simulation pour que le ballon reste synchrone à 1× comme à 5×.
+- Entre deux actions, une circulation de balle visuelle garde le match vivant.
+- Les niveaux et potentiels sont affichés par des **étoiles vectorielles**
+  (demi-étoiles réelles), jamais par des caractères `★`/`☆`/`½`.
 
 ## Scouting, étoiles et attributs cachés
 

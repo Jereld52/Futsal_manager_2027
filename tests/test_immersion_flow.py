@@ -51,6 +51,8 @@ try:
     w.start_match(); q.processEvents()
     assert w.match_state and not w.match_state.get("finished", True), w.match_state
     assert w.timer.isActive()
+    assert w.match_interval_ms() == 20000, w.match_interval_ms()
+    w._start_live_clock(0); assert abs(w._clock_rate - 1.0) < 1e-6, w._clock_rate
     w.timer.stop()
     assert "La salle explose" not in w.commentary_label.text()  # pas encore de but
     assert w.commentary_log.toPlainText().strip(), "commentaire de coup d'envoi absent"
