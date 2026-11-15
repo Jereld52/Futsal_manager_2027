@@ -118,4 +118,34 @@ w2.note_state(st, animate=True)
 assert st == snapshot, "le terrain a muté l'état du moteur"
 print("6) lecture seule : état du moteur inchangé")
 
+# 7) Stress de fluidité : 600 frames, changements de possession et de tactique.
+w3 = Pitch2DWidget(); w3.resize(880, 460); w3.show(); q.processEvents()
+w3.reset_teams("Stress FC", "Rideau FC", "#2f6fed", "#c47220")
+allowed_phases = {"build_low","build_mid","progress","final_third","transition","set_piece","defend"}
+for block in range(10):
+    poss = "h" if block % 3 else "a"
+    form = ["2-2","3-1","4-0","1-2-1","1-1-2"][block % 5]
+    st2 = state(tactics={"h": {"formation": form, "preset": "possession" if block % 2 else "contre",
+                                "pressing": 2 if block % 2 else 0, "mentality": 2 if block % 2 else 1,
+                                "block": "Haut" if block % 2 else "Bas", "width": "Large" if block % 2 else "Étroite",
+                                "focus": "Ailes" if block % 2 else "Axe", "tempo": "Rapide" if block % 2 else "Patient"},
+                         "a": {"formation": "3-1", "preset": "equilibre", "pressing": 1,
+                                "mentality": 0, "block": "Médian", "width": "Normale",
+                                "focus": "Axe", "tempo": "Normal"}})
+    st2["possession_side"] = poss
+    w3.note_state(st2, animate=True)
+    w3._ball["pos"] = [0.20 + 0.06 * block, 0.50]
+    for frame in range(60):
+        before = [list(e["pos"]) for e in w3._teams["h"] + w3._teams["a"]]
+        w3._step()
+        after = [list(e["pos"]) for e in w3._teams["h"] + w3._teams["a"]]
+        for (x1,y1),(x2,y2) in zip(before, after):
+            assert abs(x2-x1)+abs(y2-y1) < 0.06, (block, frame, x1,y1,x2,y2)
+    for e in w3._teams["h"] + w3._teams["a"]:
+        assert e["shown"] is False or (0.0 <= e["pos"][0] <= 1.0 and 0.0 <= e["pos"][1] <= 1.0)
+    assert w3._build_phase in allowed_phases, w3._build_phase
+    if not (w3._goal_flash and w3._goal_flash[1] > time.monotonic()):
+        assert 0.0 <= w3._ball["pos"][0] <= 0.995, w3._ball["pos"]
+print("7) stress fluidité : 600 frames, 5 systèmes, aucun saut ni ballon dans le but")
+
 print("RESULT: ALL OK")

@@ -10190,3 +10190,44 @@ Nouveau `tests/test_pitch_tactics.py` :
 - `data/error.log` : **0 octet**.
 - Aucun `.exe` reconstruit, aucune sauvegarde utilisateur modifiée.
 
+
+## Annexe HT - Réalisme tactique, attributs et stress 2D (15/11/2026)
+
+### 1) AUDIT RÉALISÉ
+- 600 à 900 matchs synthétiques par scénario, joueurs et profils cohérents.
+- Comparaison de :
+  - possession / pressing / contre / équilibré ;
+  - offensive / prudente ;
+  - largeur Large/Étroite, axe Ailes/Axe, tempo Rapide/Patient ;
+  - finition, défense, gardien, passe, vitesse/dribble, placement.
+
+### 2) CORRECTIONS D'ÉQUILIBRAGE
+- **Possession trop dominante** : elle atteignait ~57 % de victoires à domicile
+  contre 44 % en équilibré. Réduction de la possession, de la passe et ajout
+  d'une petite vulnérabilité défensive : elle revient autour de **50 %**.
+- **Contre trop faible** : attaque et défense du bloc contre relevées pour
+  rester une option viable (~44 %).
+- **Largeur/axe/tempo trop discrets** : effets offensifs renforcés (Large +
+  Ailes, Axe, Rapide/Patient) sans écraser le niveau des joueurs.
+- **Vitesse/dribble trop faibles** : ajout d'un poids direct dans la qualité
+  offensive. Les écarts de vitesse/dribble se voient maintenant dans les buts.
+- **Mentalités trop proches** : offensive pousse davantage et s'expose plus,
+  prudente marque moins et concède moins.
+- Les attributs **finition, défense, gardien, passe, vitesse et placement**
+  ont tous un effet mesurable sur les buts ou les buts encaissés.
+
+### 3) TESTS DE NON-RÉGRESSION
+- Nouveau `tests/test_tactics_realism.py` :
+  1. possession vs équilibré ;
+  2. offensive vs prudente ;
+  3. pressing haut vs bloc bas/contre ;
+  4. contre vs possession ;
+  5. réglages déterministes large/ailes/rapide et offensive/prudente ;
+  6. finition, défense, gardien, passe, vitesse, placement.
+- `tests/test_pitch_tactics.py` : stress de **600 frames** avec 5 systèmes,
+  changements de possession et de tactique, aucun saut, aucun ballon dans le
+  but sans évènement `goal`.
+- Suite complète : **102 suites PASS, 0 FAIL**, `RESULT : ALL OK`.
+- `data/error.log` : **0 octet**.
+- Aucune sauvegarde utilisateur modifiée, aucun `.exe` reconstruit.
+

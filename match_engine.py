@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 """Moteur de resultat v2 : simulation des matchs entre clubs.
 
 Le moteur prend en compte :
@@ -32,8 +32,8 @@ SHOT_BUILD = 0.090
 SHOT_EDGE = 0.85
 
 MENTALITY = {
-    "Offensive":  {"atk": 1.085, "def": 0.945, "conv": 1.00, "risk": 1.18, "push": 12},
-    "Prudente":   {"atk": 0.945, "def": 1.075, "conv": 1.00, "risk": 0.88, "push": 6},
+    "Offensive":  {"atk": 1.100, "def": 0.930, "conv": 1.03, "risk": 1.20, "push": 14},
+    "Prudente":   {"atk": 0.910, "def": 1.070, "conv": 0.98, "risk": 0.86, "push": 6},
     "Équilibrée": {"atk": 1.000, "def": 1.000, "conv": 1.00, "risk": 1.00, "push": 8},
 }
 
@@ -44,9 +44,9 @@ BLOCK = {
 }
 
 STYLE = {
-    "possession": {"poss": 1.28, "pass": 1.020, "atk": 1.000, "def": 1.000},
-    "contre":     {"poss": 0.88, "pass": 0.990, "atk": 1.015, "def": 1.010},
-    "pressing":   {"poss": 1.04, "pass": 0.995, "atk": 1.020, "def": 0.990},
+    "possession": {"poss": 1.06, "pass": 1.006, "atk": 0.998, "def": 0.982},
+    "contre":     {"poss": 0.90, "pass": 0.985, "atk": 1.065, "def": 1.020},
+    "pressing":   {"poss": 1.02, "pass": 0.995, "atk": 1.025, "def": 0.985},
     "equilibre":  {"poss": 1.00, "pass": 1.000, "atk": 1.000, "def": 1.000},
 }
 
@@ -197,13 +197,17 @@ def _attack_score(team, opponent, minute):
     if str(opponent.get("identity", {}).get("formation") or "").lower().startswith("gardien"):
         score *= 1.085
     if team["width"] == "Large":
-        score *= 1.015
+        score *= 1.025
     elif team["width"] == "Étroite":
-        score *= 1.008
-    if team["focus"] == "Ailes" and team["width"] == "Large":
         score *= 1.010
+    if team["focus"] == "Ailes" and team["width"] == "Large":
+        score *= 1.018
     elif team["focus"] == "Axe":
-        score *= 1.006
+        score *= 1.010
+    if team["tempo"] == "Rapide":
+        score *= 1.012
+    elif team["tempo"] == "Patient":
+        score *= 0.996
     score *= (1.0 - 0.20 * team["fatigue"])
     score *= team["form"]
     score *= (1.0 - 0.02 * min(2, len(team["injuries"])))
@@ -212,6 +216,9 @@ def _attack_score(team, opponent, minute):
     score *= (1.0 + (team["work_rate"] - 50.0) * 0.0006
               + (team["composure"] - 50.0) * 0.0004
               + (team["aggression"] - 50.0) * 0.0002)
+    # Vitesse et dribble : poids direct dans le jeu offensif (futsal).
+    score *= (1.0 + (team["dribble"] - 50.0) * 0.0016
+              + (team["speed"] - 50.0) * 0.0012)
     score *= (1.0 + HOME_ATTACK) if team["is_home"] else 1.0
     if team["players_on"] < 5:
         score *= 0.86
@@ -728,3 +735,4 @@ def simulate_other_fixtures(host, conn, matchday, human_opponent_name=None, toda
                 ph = ",".join("?" * len(on_field))
                 conn.execute("UPDATE player SET condition=MIN(100,condition+3) WHERE club_id=? AND injury_days<=0 AND id NOT IN (%s)" % ph,
                              (club_id, *on_field))
+
